@@ -97,6 +97,7 @@ const DashboardHome = () => {
   const [userBalance, setUserBalance] = useState<number>(0);
   const [markedNumbers, setMarkedNumbers] = useState<number[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [autoClick, setAutoClick] = useState(false);
 
   /* -------------------- HEADER STATE -------------------- */
   const [gameNo, setGameNo] = useState("000001");
@@ -218,6 +219,11 @@ const DashboardHome = () => {
     }
   }, [lastJsonMessage, wsId]);
 
+  const handlePlayboardError = (msg: string) => {
+    setErrorMessage(msg);
+    setTimeout(() => setErrorMessage(null), 3000); // disappear after 3s
+  };
+
   /* -------------------- LOCAL COUNTDOWN FOR NUMBER CALLING -------------------- */
   useEffect(() => {
     if (reservationActive) return; // backend handles countdown for reservation
@@ -294,15 +300,33 @@ const DashboardHome = () => {
         </div>
 
         {playboard.length > 0 && (
-          <PlayBoard
-            playboard={playboard}
-            calledNumbers={calledNumbers}
-            winningCells={winningCells}
-            wsId={wsId}
-            sendJsonMessage={sendJsonMessage}
-            markedNumbers={markedNumbers}
-            setMarkedNumbers={setMarkedNumbers}
-          />
+          <>
+            {/* --- Auto-Click Toggle --- */}
+            <div className="flex items-center gap-2 mb-2 justify-center">
+              <label className="flex items-center gap-1 text-sm text-white cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoClick}
+                  onChange={(e) => setAutoClick(e.target.checked)}
+                  className="w-4 h-4 accent-emerald-400 rounded"
+                />
+                Auto-Click Numbers
+              </label>
+            </div>
+
+            {/* --- PlayBoard --- */}
+            <PlayBoard
+              playboard={playboard}
+              calledNumbers={calledNumbers}
+              winningCells={winningCells}
+              wsId={wsId}
+              sendJsonMessage={sendJsonMessage}
+              markedNumbers={markedNumbers}
+              setMarkedNumbers={setMarkedNumbers}
+              onError={handlePlayboardError}
+              autoClick={autoClick} // ✅ new prop
+            />
+          </>
         )}
 
         {winnerId && (

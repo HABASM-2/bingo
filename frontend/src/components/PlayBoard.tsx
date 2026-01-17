@@ -1,3 +1,5 @@
+import { useEffect } from "react";
+
 type Props = {
   playboard: number[];
   calledNumbers: number[];
@@ -6,7 +8,8 @@ type Props = {
   sendJsonMessage: (msg: any) => void;
   markedNumbers: number[];
   setMarkedNumbers: (nums: number[]) => void;
-  onError: (msg: string) => void; // ✅ new
+  onError: (msg: string) => void; // existing
+  autoClick?: boolean; // ✅ new prop
 };
 
 const PlayBoard = ({
@@ -18,6 +21,7 @@ const PlayBoard = ({
   markedNumbers,
   setMarkedNumbers,
   onError,
+  autoClick = false, // default false
 }: Props) => {
   const labels = ["B", "I", "N", "G", "O"];
   const safeWinningCells = winningCells ?? [];
@@ -30,6 +34,7 @@ const PlayBoard = ({
     O: "bg-purple-400 text-white",
   };
 
+  // ---------------- HANDLE CLICK ----------------
   const handleClick = (num: number) => {
     if (num === 0) return; // FREE
     if (!calledNumbers.length) return;
@@ -42,7 +47,7 @@ const PlayBoard = ({
       markedNumbers.includes(num) ||
       !playboard.includes(num)
     ) {
-      onError("❌ Wrong number! You are out of the game."); // tell Home to show toast
+      onError("❌ Wrong number! You are out of the game."); // show toast
       sendJsonMessage({ type: "mark_number", number: num }); // backend handles disqualification
       return;
     }
@@ -51,6 +56,23 @@ const PlayBoard = ({
     sendJsonMessage({ type: "mark_number", number: num });
   };
 
+  // ---------------- AUTO-CLICK EFFECT ----------------
+  useEffect(() => {
+    if (!autoClick) return; // only auto-click if enabled
+    if (!calledNumbers.length) return;
+
+    const lastCalled = calledNumbers[calledNumbers.length - 1];
+
+    if (
+      lastCalled &&
+      playboard.includes(lastCalled) &&
+      !markedNumbers.includes(lastCalled)
+    ) {
+      handleClick(lastCalled); // automatically mark the number
+    }
+  }, [calledNumbers, autoClick]); // triggers on new called numbers
+
+  // ---------------- RENDER ----------------
   return (
     <div className="mt-2 space-y-1 w-1/2 mx-auto">
       <h2 className="text-center font-bold text-green-600 text-sm">
