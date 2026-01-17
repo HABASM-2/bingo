@@ -239,7 +239,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 number = data["number"]
                 user_state = game_state["users"].get(ws_id)
 
-                # DESELECT → REFUND
+                # ---------------- DESELECT (same number) ----------------
                 if user_state and user_state.get("selected_number") == number:
                     if user_state.get("staked"):
                         user.balance += STAKE_AMOUNT
@@ -257,24 +257,32 @@ async def websocket_endpoint(websocket: WebSocket):
                     reserved = [u["selected_number"] for u in game_state["users"].values()]
                     if number in reserved:
                         continue
-                    
-                    db.refresh(user)
-                    if user.balance < STAKE_AMOUNT:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": "Insufficient balance",
-                        })
-                        continue
 
-                    user.balance -= STAKE_AMOUNT
-                    db.add(Transaction(
-                        user_id=user.id,
-                        type="withdraw",
-                        amount=STAKE_AMOUNT,
-                        reason="Bingo stake",
-                    ))
-                    db.commit()
+                    # 🔹 CASE 1: User already selected another number → JUST CHANGE NUMBER
+                    if user_state and user_state.get("staked"):
+                        # regenerate playboard ONLY, no balance change
+                        pass
 
+                    # 🔹 CASE 2: First-time selection → CHARGE STAKE
+                    else:
+                        db.refresh(user)
+                        if user.balance < STAKE_AMOUNT:
+                            await websocket.send_json({
+                                "type": "error",
+                                "message": "Insufficient balance",
+                            })
+                            continue
+
+                        user.balance -= STAKE_AMOUNT
+                        db.add(Transaction(
+                            user_id=user.id,
+                            type="withdraw",
+                            amount=STAKE_AMOUNT,
+                            reason="Bingo stake",
+                        ))
+                        db.commit()
+
+                    # -------- Generate new playboard --------
                     def generate_bingo_playboard(selected_number: int):
                         columns = {
                             "B": list(range(1, 16)),
@@ -311,6 +319,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         return board
 
                     playboard = generate_bingo_playboard(number)
+
                     game_state["users"][ws_id] = {
                         "user_id": user.id,
                         "selected_number": number,
