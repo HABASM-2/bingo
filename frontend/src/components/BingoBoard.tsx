@@ -39,19 +39,19 @@ const BingoBoard = ({
   };
 
   return (
-    <div className="inline-block p-2 rounded-xl bg-[#0f172a] shadow-lg max-w-full overflow-x-auto">
+    <div className="inline-block p-3 rounded-xl bg-[#0f172a] shadow-lg max-w-full overflow-x-auto">
       {error && (
-        <div className="text-red-500 font-bold text-center text-xs mb-1">
+        <div className="text-red-500 font-bold text-center text-sm mb-2">
           {error}
         </div>
       )}
 
       {/* Header row */}
-      <div className="grid grid-cols-5 gap-[1px] mb-1">
+      <div className="grid grid-cols-5 gap-[2px] mb-2">
         {groups.map((group) => (
           <div
             key={group.label}
-            className={`${group.bgColor} text-black flex-1 min-w-[20px] h-5 flex items-center justify-center font-bold rounded-md text-[10px]`}
+            className={`${group.bgColor} text-black flex-1 min-w-[30px] h-7 flex items-center justify-center font-bold rounded-md text-sm`}
           >
             {group.label}
           </div>
@@ -59,9 +59,9 @@ const BingoBoard = ({
       </div>
 
       {/* Numbers grid */}
-      <div className="grid grid-cols-5 gap-[1px]">
+      <div className="grid grid-cols-5 gap-[2px]">
         {groups.map((group) => (
-          <div key={group.label} className="flex flex-col gap-[1px]">
+          <div key={group.label} className="flex flex-col gap-[2px]">
             {Array.from(
               { length: group.end - group.start + 1 },
               (_, i) => group.start + i
@@ -80,7 +80,7 @@ const BingoBoard = ({
                 textClass = "text-white font-bold";
               } else if (isSelected || isReserved) {
                 bgClass = "bg-yellow-400";
-                shadowClass = "shadow-[0_0_3px_#facc15]";
+                shadowClass = "shadow-[0_0_4px_#facc15]";
                 textClass = "text-black font-bold";
               }
 
@@ -89,7 +89,7 @@ const BingoBoard = ({
                   key={num}
                   onClick={() => handleClick(num)}
                   disabled={!reservationActive && !isCalled}
-                  className={`flex-1 min-w-[18px] h-4 sm:h-5 text-[9px] sm:text-[10px] font-bold flex items-center justify-center rounded-md
+                  className={`flex-1 min-w-[22px] h-6 sm:h-7 text-[10px] sm:text-[11px] font-bold flex items-center justify-center rounded-md
                       ${bgClass} ${textClass} ${shadowClass} transition`}
                 >
                   {num}

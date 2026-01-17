@@ -6,6 +6,7 @@ type Props = {
   sendJsonMessage: (msg: any) => void;
   markedNumbers: number[];
   setMarkedNumbers: (nums: number[]) => void;
+  onError: (msg: string) => void; // ✅ new
 };
 
 const PlayBoard = ({
@@ -16,6 +17,7 @@ const PlayBoard = ({
   sendJsonMessage,
   markedNumbers,
   setMarkedNumbers,
+  onError,
 }: Props) => {
   const labels = ["B", "I", "N", "G", "O"];
   const safeWinningCells = winningCells ?? [];
@@ -30,7 +32,22 @@ const PlayBoard = ({
 
   const handleClick = (num: number) => {
     if (num === 0) return; // FREE
-    if (!calledNumbers.includes(num)) return;
+    if (!calledNumbers.length) return;
+
+    const lastCalled = calledNumbers[calledNumbers.length - 1];
+
+    // ❌ Wrong click
+    if (
+      num !== lastCalled ||
+      markedNumbers.includes(num) ||
+      !playboard.includes(num)
+    ) {
+      onError("❌ Wrong number! You are out of the game."); // tell Home to show toast
+      sendJsonMessage({ type: "mark_number", number: num }); // backend handles disqualification
+      return;
+    }
+
+    // ✅ Valid click
     sendJsonMessage({ type: "mark_number", number: num });
   };
 
@@ -63,14 +80,16 @@ const PlayBoard = ({
             ([r, c]) => r === row && c === col
           );
           const isMarked = markedNumbers.includes(num);
-          const isCalled = calledNumbers.includes(num);
+
+          const lastCalled = calledNumbers[calledNumbers.length - 1];
 
           let bgClass = "bg-gray-100 text-gray-800"; // default off-white
 
           if (isWinning) bgClass = "bg-green-600 text-white animate-pulse";
           else if (isFree) bgClass = "bg-green-300 text-white";
           else if (isMarked) bgClass = "bg-green-500 text-white";
-          else if (isCalled) bgClass = "bg-green-400 text-white";
+          else if (num === lastCalled)
+            bgClass = "bg-yellow-300 text-black animate-pulse";
 
           return (
             <div

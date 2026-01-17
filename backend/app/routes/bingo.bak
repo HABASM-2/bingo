@@ -36,25 +36,25 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
-def check_bingo_win(playboard, marked_numbers):
-    marked = set(marked_numbers)
-    marked.add(0)  # FREE cell
+def check_bingo_win(playboard, called_numbers):
+    called = set(called_numbers)
+    called.add(0)
 
     grid = [playboard[i:i+5] for i in range(0, 25, 5)]
     winning_cells = []
 
     for r in range(5):
-        if all(grid[r][c] in marked for c in range(5)):
+        if all(num in called for num in grid[r]):
             winning_cells.extend([(r, c) for c in range(5)])
 
     for c in range(5):
-        if all(grid[r][c] in marked for r in range(5)):
+        if all(grid[r][c] in called for r in range(5)):
             winning_cells.extend([(r, c) for r in range(5)])
 
-    if all(grid[i][i] in marked for i in range(5)):
+    if all(grid[i][i] in called for i in range(5)):
         winning_cells.extend([(i, i) for i in range(5)])
 
-    if all(grid[i][4 - i] in marked for i in range(5)):
+    if all(grid[i][4 - i] in called for i in range(5)):
         winning_cells.extend([(i, 4 - i) for i in range(5)])
 
     return list(set(winning_cells))
@@ -137,7 +137,7 @@ async def start_game():
                     continue
 
                 winning_cells = check_bingo_win(
-                    user["playboard"], user["marked_numbers"]
+                    user["playboard"], game_state["called_numbers"]
                 )
 
                 if winning_cells:
@@ -342,31 +342,18 @@ async def websocket_endpoint(websocket: WebSocket):
 
                 num = data.get("number")
                 user_state = game_state["users"].get(ws_id)
-
-                if not user_state or not user_state.get("eligible", True):
+                if not user_state:
                     continue
 
-                last_called = game_state["called_numbers"][-1] if game_state["called_numbers"] else None
-
-                # ❌ Clicking wrong number → DISQUALIFY
-                if (
-                    num != last_called
-                    or num not in user_state["playboard"]
-                    or num in user_state["marked_numbers"]
-                ):
-                    user_state["eligible"] = False
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "❌ Wrong number! You are out of the game.",
-                    })
-                    continue
-
-                # ✅ Valid mark
-                user_state["marked_numbers"].append(num)
+                if num in user_state["playboard"] and num in game_state["called_numbers"]:
+                    marked = user_state.get("marked_numbers", [])
+                    if num not in marked:
+                        marked.append(num)
+                        user_state["marked_numbers"] = marked
 
                 await websocket.send_json({
                     "type": "marked_numbers",
-                    "marked_numbers": user_state["marked_numbers"],
+                    "marked_numbers": user_state.get("marked_numbers", []),
                 })
 
     except WebSocketDisconnect:

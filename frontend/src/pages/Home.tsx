@@ -6,6 +6,7 @@ import CalledNumbersPanel from "../components/CalledNumbersPanel";
 import PlayBoard from "../components/PlayBoard";
 import NumberCaller from "../components/NumberCaller";
 import { Volume2, VolumeX } from "lucide-react";
+import { getBingoWsUrl } from "../config/api";
 
 /* -------------------- WS MESSAGE TYPE -------------------- */
 type WSMessage = {
@@ -24,6 +25,8 @@ type WSMessage = {
   winning_cells?: [number, number][];
   marked_numbers?: number[];
   balance?: number[];
+
+  message?: string;
 
   game_no?: string;
   players?: number;
@@ -93,6 +96,7 @@ const DashboardHome = () => {
   const [winner, setWinner] = useState(false);
   const [userBalance, setUserBalance] = useState<number>(0);
   const [markedNumbers, setMarkedNumbers] = useState<number[]>([]);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   /* -------------------- HEADER STATE -------------------- */
   const [gameNo, setGameNo] = useState("000001");
@@ -105,9 +109,7 @@ const DashboardHome = () => {
 
   /* -------------------- WEBSOCKET -------------------- */
   const { sendJsonMessage, lastJsonMessage } = useWebSocket(
-    token
-      ? `ws://localhost:8000/bingo/ws?token=${token}`
-      : "ws://localhost:8000/bingo/ws",
+    getBingoWsUrl(token ?? undefined), // convert null → undefined
     {
       shouldReconnect: () => true,
       reconnectAttempts: Infinity,
@@ -207,6 +209,12 @@ const DashboardHome = () => {
         setWinner(false);
         setMarkedNumbers([]);
         break;
+
+      case "error":
+        setErrorMessage(msg.message ?? "An error occurred");
+        // Clear automatically after 3 seconds
+        setTimeout(() => setErrorMessage(null), 3000);
+        break;
     }
   }, [lastJsonMessage, wsId]);
 
@@ -225,6 +233,15 @@ const DashboardHome = () => {
   const handleSelectNumber = (num: number) => {
     if (!reservationActive) return;
     if (!token) return;
+
+    // Optimistic UI update
+    if (selectedNumber !== num) {
+      // generate empty playboard placeholder or show loading
+      setSelectedNumber(num);
+      setPlayboard([]);
+      setMarkedNumbers([]);
+    }
+
     sendJsonMessage({ type: "select_number", number: num });
   };
 
@@ -243,7 +260,11 @@ const DashboardHome = () => {
         />
 
         <h1 className="text-center text-lg font-bold text-emerald-400">
-          BINGO DRAW
+          {reservationActive
+            ? "Select Your Number"
+            : playboard.length > 0
+            ? "BINGO DRAW"
+            : "Game is already started"}
         </h1>
 
         <div className="grid grid-cols-12 gap-3">
@@ -301,6 +322,15 @@ const DashboardHome = () => {
             : `Next call in ${secondsLeft}s`}
         </p>
       </div>
+      {/* Error Toast */}
+      {/* Centered Error Message */}
+      {errorMessage && (
+        <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
+          <div className="bg-red-600 bg-opacity-90 text-white px-6 py-4 rounded-xl text-center shadow-lg pointer-events-auto animate-fade-in">
+            <p className="font-bold text-lg">⚠️ {errorMessage}</p>
+          </div>
+        </div>
+      )}
     </PhoneContainer>
   );
 };
