@@ -7,11 +7,11 @@ import PlayBoard from "../components/PlayBoard";
 import NumberCaller from "../components/NumberCaller";
 import { Volume2, VolumeX } from "lucide-react";
 import { getBingoWsUrl } from "../config/api";
+import StakeSelector from "../components/StakeSelector";
 
 /* -------------------- WS MESSAGE TYPE -------------------- */
 type WSMessage = {
   type: string;
-
   seconds_left?: number;
   reservation_active?: boolean;
   reserved_numbers?: number[];
@@ -24,10 +24,7 @@ type WSMessage = {
   winning_number?: number;
   winning_cells?: [number, number][];
   marked_numbers?: number[];
-  balance?: number[];
-
   message?: string;
-
   game_no?: string;
   players?: number;
   derash?: number;
@@ -80,8 +77,11 @@ const DashboardHeader = ({
   </div>
 );
 
+const AVAILABLE_STAKES = [10, 20, 50];
+
 /* -------------------- MAIN -------------------- */
 const DashboardHome = () => {
+  /* -------------------- GAME STATES -------------------- */
   const [reservationActive, setReservationActive] = useState(true);
   const [secondsLeft, setSecondsLeft] = useState(60);
   const [reservedNumbers, setReservedNumbers] = useState<number[]>([]);
@@ -94,12 +94,15 @@ const DashboardHome = () => {
   const [winningCells, setWinningCells] = useState<[number, number][]>([]);
   const [wsId, setWsId] = useState<string | null>(null);
   const [winner, setWinner] = useState(false);
-  const [userBalance, setUserBalance] = useState<number>(0);
   const [markedNumbers, setMarkedNumbers] = useState<number[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [autoClick, setAutoClick] = useState(false);
 
-  /* -------------------- HEADER STATE -------------------- */
+  /* -------------------- STAKE -------------------- */
+  const [stake, setStake] = useState<number>(10);
+  const [gameStarted, setGameStarted] = useState(false);
+
+  /* -------------------- HEADER -------------------- */
   const [gameNo, setGameNo] = useState("000001");
   const [players, setPlayers] = useState(0);
   const [derash, setDerash] = useState(0);
@@ -108,15 +111,32 @@ const DashboardHome = () => {
   /* -------------------- TOKEN -------------------- */
   const token = localStorage.getItem("token");
 
+  // Remember stake on refresh
+  useEffect(() => {
+    const savedStake = localStorage.getItem("bingo_stake");
+    if (savedStake) setStake(Number(savedStake));
+  }, []);
+
   /* -------------------- WEBSOCKET -------------------- */
-  const { sendJsonMessage, lastJsonMessage } = useWebSocket(
-    getBingoWsUrl(token ?? undefined), // convert null → undefined
+  const { sendJsonMessage, lastJsonMessage, getWebSocket } = useWebSocket(
+    getBingoWsUrl(token ?? undefined, stake),
     {
       shouldReconnect: () => true,
       reconnectAttempts: Infinity,
       reconnectInterval: 3000,
-    }
+    },
   );
+
+  /* -------------------- STAKE CHANGE -------------------- */
+  const handleStakeChange = (s: number) => {
+    if (gameStarted) return; // cannot change during active game
+    localStorage.setItem("bingo_stake", String(s));
+    setStake(s);
+
+    // Reconnect WS with new stake
+    const ws = getWebSocket();
+    if (ws) ws.close();
+  };
 
   /* -------------------- WS HANDLER -------------------- */
   useEffect(() => {
@@ -133,7 +153,9 @@ const DashboardHome = () => {
         setSecondsLeft(msg.seconds_left ?? 60);
         setReservedNumbers(msg.reserved_numbers ?? []);
         if (!wsId) setWsId(msg.user_id ?? null);
-        if (msg.user_id === wsId && msg.selected_number) {
+
+        // hydrate user state
+        if (msg.selected_number) {
           setSelectedNumber(msg.selected_number);
           setPlayboard(msg.playboard ?? []);
           setMarkedNumbers(msg.marked_numbers ?? []);
@@ -148,7 +170,8 @@ const DashboardHome = () => {
 
       case "reservation_end":
         setReservationActive(false);
-        setSecondsLeft(3); // start countdown for number calling
+        setSecondsLeft(3);
+        setGameStarted(true);
         break;
 
       case "number_reserved":
@@ -170,7 +193,7 @@ const DashboardHome = () => {
       case "number_called":
         setCalledNumbers(msg.called_numbers ?? []);
         setLastNumber(msg.number);
-        setSecondsLeft(3); // reset countdown for next call
+        setSecondsLeft(3);
         break;
 
       case "winner":
@@ -185,17 +208,6 @@ const DashboardHome = () => {
         break;
 
       case "no_players":
-        setReservationActive(true);
-        setSecondsLeft(60);
-        setReservedNumbers([]);
-        setSelectedNumber(null);
-        setPlayboard([]);
-        setMarkedNumbers([]);
-        setCalledNumbers([]);
-        setWinner(false);
-        setLastNumber(undefined);
-        break;
-
       case "new_round":
         setReservationActive(true);
         setSecondsLeft(60);
@@ -209,45 +221,36 @@ const DashboardHome = () => {
         setWinningCells([]);
         setWinner(false);
         setMarkedNumbers([]);
+        setGameStarted(false);
         break;
 
       case "error":
         setErrorMessage(msg.message ?? "An error occurred");
-        // Clear automatically after 3 seconds
         setTimeout(() => setErrorMessage(null), 3000);
         break;
     }
   }, [lastJsonMessage, wsId]);
 
+  /* -------------------- PLAYBOARD ERROR -------------------- */
   const handlePlayboardError = (msg: string) => {
     setErrorMessage(msg);
-    setTimeout(() => setErrorMessage(null), 3000); // disappear after 3s
+    setTimeout(() => setErrorMessage(null), 3000);
   };
 
-  /* -------------------- LOCAL COUNTDOWN FOR NUMBER CALLING -------------------- */
+  /* -------------------- LOCAL COUNTDOWN -------------------- */
   useEffect(() => {
-    if (reservationActive) return; // backend handles countdown for reservation
+    if (reservationActive) return;
 
     const interval = setInterval(() => {
       setSecondsLeft((s) => (s > 0 ? s - 1 : 0));
     }, 1000);
-
     return () => clearInterval(interval);
   }, [reservationActive, lastNumber]);
 
-  /* -------------------- ACTIONS -------------------- */
+  /* -------------------- SELECT NUMBER -------------------- */
   const handleSelectNumber = (num: number) => {
-    if (!reservationActive) return;
-    if (!token) return;
-
-    // Optimistic UI update
-    if (selectedNumber !== num) {
-      // generate empty playboard placeholder or show loading
-      setSelectedNumber(num);
-      setPlayboard([]);
-      setMarkedNumbers([]);
-    }
-
+    if (!reservationActive || !token) return;
+    if (selectedNumber !== num) setSelectedNumber(num);
     sendJsonMessage({ type: "select_number", number: num });
   };
 
@@ -255,7 +258,15 @@ const DashboardHome = () => {
   return (
     <PhoneContainer>
       <div className="p-3 space-y-4 h-full overflow-y-auto">
-        {/* HEADER */}
+        {/* Stake selector */}
+        <StakeSelector
+          currentStake={stake}
+          availableStakes={AVAILABLE_STAKES}
+          onChange={handleStakeChange}
+          gameStarted={gameStarted}
+        />
+
+        {/* Header */}
         <DashboardHeader
           gameNo={gameNo}
           derash={derash}
@@ -265,14 +276,16 @@ const DashboardHome = () => {
           toggleMute={() => setMuted((m) => !m)}
         />
 
+        {/* Title */}
         <h1 className="text-center text-lg font-bold text-emerald-400">
           {reservationActive
             ? "Select Your Number"
             : playboard.length > 0
-            ? "BINGO DRAW"
-            : "Game is already started"}
+              ? "BINGO DRAW"
+              : "Game is already started"}
         </h1>
 
+        {/* Bingo & Called Numbers */}
         <div className="grid grid-cols-12 gap-3">
           <div className="col-span-7">
             <BingoBoard
@@ -299,9 +312,9 @@ const DashboardHome = () => {
           </div>
         </div>
 
+        {/* Playboard & Auto-Click */}
         {playboard.length > 0 && (
           <>
-            {/* --- Auto-Click Toggle --- */}
             <div className="flex items-center gap-2 mb-2 justify-center">
               <label className="flex items-center gap-1 text-sm text-white cursor-pointer select-none">
                 <input
@@ -314,7 +327,6 @@ const DashboardHome = () => {
               </label>
             </div>
 
-            {/* --- PlayBoard --- */}
             <PlayBoard
               playboard={playboard}
               calledNumbers={calledNumbers}
@@ -324,11 +336,12 @@ const DashboardHome = () => {
               markedNumbers={markedNumbers}
               setMarkedNumbers={setMarkedNumbers}
               onError={handlePlayboardError}
-              autoClick={autoClick} // ✅ new prop
+              autoClick={autoClick}
             />
           </>
         )}
 
+        {/* Winner Modal */}
         {winnerId && (
           <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
             <div className="bg-black bg-opacity-70 px-6 py-4 rounded-xl text-center pointer-events-auto">
@@ -340,14 +353,15 @@ const DashboardHome = () => {
           </div>
         )}
 
+        {/* Footer countdown */}
         <p className="text-center text-sm text-gray-400">
           {reservationActive
             ? `Select your number (${secondsLeft}s left)`
             : `Next call in ${secondsLeft}s`}
         </p>
       </div>
-      {/* Error Toast */}
-      {/* Centered Error Message */}
+
+      {/* Centered Error Toast */}
       {errorMessage && (
         <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
           <div className="bg-red-600 bg-opacity-90 text-white px-6 py-4 rounded-xl text-center shadow-lg pointer-events-auto animate-fade-in">
