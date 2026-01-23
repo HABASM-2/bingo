@@ -17,9 +17,13 @@ def create_access_token(data: dict):
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-def decode_access_token(token: str) -> dict:
+def decode_access_token(token: str) -> dict | None:
     try:
+        if token.startswith("Bearer "):
+            token = token.split(" ")[1]
+
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         return payload
-    except JWTError:
-        return {}
+    except JWTError as e:
+        print("JWT DECODE ERROR:", e)
+        return None

@@ -4,7 +4,7 @@ import os
 
 DATABASE_URL = os.getenv(
     "DATABASE_URL",
-    "postgresql://postgres:123443@localhost:5432/bingo_db4"
+    "postgresql://postgres:123443@localhost:5432/bingo_db5"
 )
 
 engine = create_engine(DATABASE_URL)

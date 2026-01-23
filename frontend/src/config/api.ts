@@ -1,7 +1,8 @@
 // src/config/api.ts
 
 // Put your LAN IP or localhost here
-export const API_URL = "http://10.55.29.239:8000";
+// export const API_URL = "http://10.55.29.239:8000";
+export const API_URL = "https://coraline-fabaceous-ungutturally.ngrok-free.dev";
 
 export const getBingoWsUrl = (token?: string, stake: number = 10) => {
   const wsBase = API_URL.startsWith("https")

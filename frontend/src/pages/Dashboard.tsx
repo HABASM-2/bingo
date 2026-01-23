@@ -9,7 +9,7 @@ const STAKE_KEY = "bingo_stake";
 const Dashboard = () => {
   const [tab, setTab] = useState<"dashboard" | "history" | "me">("dashboard");
 
-  const [stake, setStake] = useState<number>(() => {
+  const [stake, _setStake] = useState<number>(() => {
     const saved = localStorage.getItem(STAKE_KEY);
     return saved ? Number(saved) : 10;
   });
@@ -21,9 +21,7 @@ const Dashboard = () => {
 
   return (
     <div className="min-h-screen bg-black text-white pb-20">
-      {tab === "dashboard" && (
-        <DashboardHome stake={stake} setStake={setStake} />
-      )}
+      {tab === "dashboard" && <DashboardHome />}
       {tab === "history" && <History />}
       {tab === "me" && <Me />}
 

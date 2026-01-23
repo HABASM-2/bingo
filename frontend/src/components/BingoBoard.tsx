@@ -19,7 +19,6 @@ const groups = [
 
 const BingoBoard = ({
   calledNumbers,
-  lastNumber,
   reservationActive = false,
   selectedNumber,
   onSelectNumber,
@@ -64,7 +63,7 @@ const BingoBoard = ({
           <div key={group.label} className="flex flex-col gap-[2px]">
             {Array.from(
               { length: group.end - group.start + 1 },
-              (_, i) => group.start + i
+              (_, i) => group.start + i,
             ).map((num) => {
               const isCalled = calledNumbers.includes(num);
               const isSelected = selectedNumber === num;

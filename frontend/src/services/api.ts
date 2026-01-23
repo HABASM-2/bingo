@@ -23,13 +23,17 @@ export async function getMe(token: string) {
 // Admin: update balance (deposit/withdraw)
 export async function updateBalance(
   token: string,
-  data: { user_email: string; amount: number; reason: string }
+  data: { user_id: string; amount: number; note?: string } // match WalletAction
 ) {
-  const res = await fetch(`${API_URL}/admin/update-balance`, {
+  const res = await fetch(`${API_URL}/auth/deposit`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    headers: { 
+      "Content-Type": "application/json", 
+      Authorization: `Bearer ${token}` 
+    },
     body: JSON.stringify(data),
   });
+
   if (!res.ok) {
     const errorData = await res.json();
     throw new Error(errorData.detail || "Failed to update balance");

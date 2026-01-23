@@ -16,10 +16,8 @@ const PlayBoard = ({
   playboard,
   calledNumbers,
   winningCells,
-  wsId,
   sendJsonMessage,
   markedNumbers,
-  setMarkedNumbers,
   onError,
   autoClick = false, // default false
 }: Props) => {
@@ -99,7 +97,7 @@ const PlayBoard = ({
 
           const isFree = num === 0;
           const isWinning = safeWinningCells.some(
-            ([r, c]) => r === row && c === col
+            ([r, c]) => r === row && c === col,
           );
           const isMarked = markedNumbers.includes(num);
 

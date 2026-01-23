@@ -7,9 +7,9 @@ import PlayBoard from "../components/PlayBoard";
 import NumberCaller from "../components/NumberCaller";
 import { Volume2, VolumeX } from "lucide-react";
 import { getBingoWsUrl } from "../config/api";
-import StakeSelector from "../components/StakeSelector";
 
-/* -------------------- WS MESSAGE TYPE -------------------- */
+const AVAILABLE_STAKES = [10, 20, 50];
+
 type WSMessage = {
   type: string;
   seconds_left?: number;
@@ -30,7 +30,6 @@ type WSMessage = {
   derash?: number;
 };
 
-/* -------------------- HEADER -------------------- */
 const HeaderStat = ({
   label,
   value,
@@ -77,10 +76,11 @@ const DashboardHeader = ({
   </div>
 );
 
-const AVAILABLE_STAKES = [10, 20, 50];
-
-/* -------------------- MAIN -------------------- */
 const DashboardHome = () => {
+  /* -------------------- STAKE -------------------- */
+  const [stake, setStake] = useState<number | null>(null);
+  const [wsReady, setWsReady] = useState(false);
+
   /* -------------------- GAME STATES -------------------- */
   const [reservationActive, setReservationActive] = useState(true);
   const [secondsLeft, setSecondsLeft] = useState(60);
@@ -93,14 +93,11 @@ const DashboardHome = () => {
   const [winningNumber, setWinningNumber] = useState<number | null>(null);
   const [winningCells, setWinningCells] = useState<[number, number][]>([]);
   const [wsId, setWsId] = useState<string | null>(null);
-  const [winner, setWinner] = useState(false);
+  const [_winner, setWinner] = useState(false);
   const [markedNumbers, setMarkedNumbers] = useState<number[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [autoClick, setAutoClick] = useState(false);
-
-  /* -------------------- STAKE -------------------- */
-  const [stake, setStake] = useState<number>(10);
-  const [gameStarted, setGameStarted] = useState(false);
+  const [_gameStarted, setGameStarted] = useState(false);
 
   /* -------------------- HEADER -------------------- */
   const [gameNo, setGameNo] = useState("000001");
@@ -108,35 +105,48 @@ const DashboardHome = () => {
   const [derash, setDerash] = useState(0);
   const [muted, setMuted] = useState(false);
 
-  /* -------------------- TOKEN -------------------- */
   const token = localStorage.getItem("token");
 
-  // Remember stake on refresh
+  /* -------------------- LOAD STAKE -------------------- */
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlStake = params.get("stake");
+
+    // Get current localStorage stake and selected number
     const savedStake = localStorage.getItem("bingo_stake");
-    if (savedStake) setStake(Number(savedStake));
+    const savedNumber = localStorage.getItem("bingo_selected_number");
+
+    // Case 1: user already in a game (reserved number) -> always use savedStake
+    if (savedNumber) {
+      setStake(savedStake ? Number(savedStake) : null);
+      return;
+    }
+
+    // Case 2: no active game -> use URL stake if valid
+    if (urlStake && AVAILABLE_STAKES.includes(Number(urlStake))) {
+      const s = Number(urlStake);
+      setStake(s);
+      localStorage.setItem("bingo_stake", String(s));
+      return;
+    }
+
+    // Case 3: fallback to savedStake if URL is not valid
+    if (savedStake && AVAILABLE_STAKES.includes(Number(savedStake))) {
+      setStake(Number(savedStake));
+    }
   }, []);
 
-  /* -------------------- WEBSOCKET -------------------- */
-  const { sendJsonMessage, lastJsonMessage, getWebSocket } = useWebSocket(
-    getBingoWsUrl(token ?? undefined, stake),
+  /* -------------------- WS -------------------- */
+  const { sendJsonMessage, lastJsonMessage } = useWebSocket(
+    stake ? getBingoWsUrl(token ?? undefined, stake) : null,
     {
       shouldReconnect: () => true,
       reconnectAttempts: Infinity,
       reconnectInterval: 3000,
+      onOpen: () => setWsReady(true),
+      onClose: () => setWsReady(false),
     },
   );
-
-  /* -------------------- STAKE CHANGE -------------------- */
-  const handleStakeChange = (s: number) => {
-    if (gameStarted) return; // cannot change during active game
-    localStorage.setItem("bingo_stake", String(s));
-    setStake(s);
-
-    // Reconnect WS with new stake
-    const ws = getWebSocket();
-    if (ws) ws.close();
-  };
 
   /* -------------------- WS HANDLER -------------------- */
   useEffect(() => {
@@ -151,10 +161,10 @@ const DashboardHome = () => {
       case "init":
         setReservationActive(msg.reservation_active ?? true);
         setSecondsLeft(msg.seconds_left ?? 60);
+        setGameStarted(!(msg.reservation_active ?? true));
         setReservedNumbers(msg.reserved_numbers ?? []);
         if (!wsId) setWsId(msg.user_id ?? null);
 
-        // hydrate user state
         if (msg.selected_number) {
           setSelectedNumber(msg.selected_number);
           setPlayboard(msg.playboard ?? []);
@@ -231,19 +241,13 @@ const DashboardHome = () => {
     }
   }, [lastJsonMessage, wsId]);
 
-  /* -------------------- PLAYBOARD ERROR -------------------- */
-  const handlePlayboardError = (msg: string) => {
-    setErrorMessage(msg);
-    setTimeout(() => setErrorMessage(null), 3000);
-  };
-
   /* -------------------- LOCAL COUNTDOWN -------------------- */
   useEffect(() => {
     if (reservationActive) return;
-
-    const interval = setInterval(() => {
-      setSecondsLeft((s) => (s > 0 ? s - 1 : 0));
-    }, 1000);
+    const interval = setInterval(
+      () => setSecondsLeft((s) => (s > 0 ? s - 1 : 0)),
+      1000,
+    );
     return () => clearInterval(interval);
   }, [reservationActive, lastNumber]);
 
@@ -255,16 +259,36 @@ const DashboardHome = () => {
   };
 
   /* -------------------- RENDER -------------------- */
+  if (!stake) {
+    return (
+      <PhoneContainer>
+        <div className="p-3 h-full flex flex-col items-center justify-center text-white">
+          <h1 className="text-lg font-bold mb-4">Select a Stake to Start</h1>
+          {AVAILABLE_STAKES.map((s) => (
+            <button
+              key={s}
+              className="px-4 py-2 m-1 bg-emerald-500 rounded font-bold"
+              onClick={() => {
+                setStake(s);
+                localStorage.setItem("bingo_stake", String(s));
+              }}
+            >
+              {s}
+            </button>
+          ))}
+        </div>
+      </PhoneContainer>
+    );
+  }
+
   return (
     <PhoneContainer>
       <div className="p-3 space-y-4 h-full overflow-y-auto">
-        {/* Stake selector */}
-        <StakeSelector
-          currentStake={stake}
-          availableStakes={AVAILABLE_STAKES}
-          onChange={handleStakeChange}
-          gameStarted={gameStarted}
-        />
+        {!wsReady && (
+          <p className="text-center text-white mt-10">
+            Connecting to game server...
+          </p>
+        )}
 
         {/* Header */}
         <DashboardHeader
@@ -297,7 +321,6 @@ const DashboardHome = () => {
               reservedNumbers={reservedNumbers}
             />
           </div>
-
           <div className="col-span-5 space-y-3">
             <NumberCaller
               number={lastNumber}
@@ -312,7 +335,7 @@ const DashboardHome = () => {
           </div>
         </div>
 
-        {/* Playboard & Auto-Click */}
+        {/* Playboard */}
         {playboard.length > 0 && (
           <>
             <div className="flex items-center gap-2 mb-2 justify-center">
@@ -326,7 +349,6 @@ const DashboardHome = () => {
                 Auto-Click Numbers
               </label>
             </div>
-
             <PlayBoard
               playboard={playboard}
               calledNumbers={calledNumbers}
@@ -335,7 +357,10 @@ const DashboardHome = () => {
               sendJsonMessage={sendJsonMessage}
               markedNumbers={markedNumbers}
               setMarkedNumbers={setMarkedNumbers}
-              onError={handlePlayboardError}
+              onError={(msg) => {
+                setErrorMessage(msg);
+                setTimeout(() => setErrorMessage(null), 3000);
+              }}
               autoClick={autoClick}
             />
           </>
@@ -361,7 +386,7 @@ const DashboardHome = () => {
         </p>
       </div>
 
-      {/* Centered Error Toast */}
+      {/* Error toast */}
       {errorMessage && (
         <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
           <div className="bg-red-600 bg-opacity-90 text-white px-6 py-4 rounded-xl text-center shadow-lg pointer-events-auto animate-fade-in">

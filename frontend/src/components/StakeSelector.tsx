@@ -1,5 +1,4 @@
 // src/components/StakeSelector.tsx
-import React from "react";
 
 type Props = {
   currentStake: number;

@@ -10,8 +10,10 @@ type TransactionType = {
 };
 
 type UserType = {
-  id: string;
-  email: string;
+  id: string; // required for admin updates
+  email: string | null; // can be null for Telegram users
+  telegram_username: string | null;
+  telegram_first_name?: string | null;
   is_admin: boolean;
   balance: number;
 };
@@ -58,9 +60,9 @@ const Me = () => {
 
     try {
       await updateBalance(token, {
-        user_email: user.email,
+        user_id: user.id, // 🔥 Use UUID for all users (email optional)
         amount,
-        reason,
+        note: reason, // optional note for backend
       });
       setAmount(0);
       setReason("");
@@ -80,7 +82,9 @@ const Me = () => {
         </div>
         <div>
           <p className="font-semibold text-white">
-            {loading ? "Loading..." : user?.email}
+            {loading
+              ? "Loading..."
+              : user?.email || user?.telegram_username || "Unknown User"}
           </p>
           <p className="text-sm text-zinc-400">
             {loading ? "" : `Balance: $${user?.balance.toFixed(2)}`}

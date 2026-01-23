@@ -9,6 +9,9 @@ from app.models.transaction import Transaction
 from app.core.security import hash_password, verify_password, create_access_token
 from app.deps import get_db, get_current_user, admin_required
 from app.models.transaction import Transaction
+import json
+
+from app.routes.telegram_auth import verify_telegram
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -55,19 +58,51 @@ def manual_deposit(payload: WalletAction, db: Session = Depends(get_db), admin: 
     # Update balance
     user.balance += payload.amount
 
-    # Record transaction
+    # Record transaction (required stake_amount, reason optional)
     tx = Transaction(
         user_id=user.id,
         type="deposit",
         amount=payload.amount,
-        status="completed",
-        reference=f"ADMIN:{admin.email}"
+        stake_amount=0,  # admin deposits are not linked to a game
+        reason=payload.note or f"Admin deposit by {admin.display_name}"
     )
     db.add(tx)
     db.commit()
     db.refresh(user)
 
-    return {"message": "Deposit successful", "user_id": user.id, "new_balance": user.balance}
+    return {"message": "Deposit successful", "user_id": str(user.id), "new_balance": float(user.balance)}
+
+@router.post("/telegram-login")
+def telegram_login(payload: dict, db: Session = Depends(get_db)):
+    init_data = payload.get("init_data")
+    if not init_data:
+        raise HTTPException(status_code=400, detail="No init_data provided")
+
+    valid, data = verify_telegram(init_data)
+    if not valid:
+        raise HTTPException(status_code=403, detail="Invalid Telegram data")
+
+    telegram_id = int(data["id"])
+    username = data.get("username")
+    first_name = data.get("first_name")
+
+    user = db.query(User).filter(User.telegram_id == telegram_id).first()
+
+    if not user:
+        user = User(
+            telegram_id=telegram_id,
+            telegram_username=username,
+            telegram_first_name=first_name,
+            balance=0.0,
+            is_active=True,
+            is_admin=False
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    token = create_access_token({"sub": str(user.id)})
+    return {"access_token": token, "token_type": "bearer"}
 
 @router.post("/withdraw")
 def manual_withdraw(payload: WalletAction, db: Session = Depends(get_db), admin: User = Depends(admin_required)):
@@ -87,14 +122,14 @@ def manual_withdraw(payload: WalletAction, db: Session = Depends(get_db), admin:
         user_id=user.id,
         type="withdraw",
         amount=payload.amount,
-        status="completed",
-        reference=f"ADMIN:{admin.email}"
+        stake_amount=0,  # admin withdraw not linked to a game
+        reason=payload.note or f"Admin withdraw by {admin.display_name}"
     )
     db.add(tx)
     db.commit()
     db.refresh(user)
 
-    return {"message": "Withdraw successful", "user_id": user.id, "new_balance": user.balance}
+    return {"message": "Withdraw successful", "user_id": str(user.id), "new_balance": float(user.balance)}
 
 from app.models.transaction import Transaction
 
@@ -103,7 +138,15 @@ def get_my_transactions(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    txns = db.query(Transaction).filter(Transaction.user_id == current_user.id).order_by(Transaction.created_at.desc()).all()
+    # 🔥 Limit to 10 most recent transactions
+    txns = (
+        db.query(Transaction)
+        .filter(Transaction.user_id == current_user.id)
+        .order_by(Transaction.created_at.desc())
+        .limit(10)  # only top 10
+        .all()
+    )
+
     return [
         {
             "type": t.type,

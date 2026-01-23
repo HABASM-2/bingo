@@ -25,6 +25,11 @@ GAME_RESERVATION_TIME = 60
 CALL_INTERVAL = 4
 
 # =========================================================
+# PER-STAKE GAME COUNTERS
+# =========================================================
+game_counters: Dict[int, int] = {stake: 1 for stake in STAKE_ROOMS}
+
+# =========================================================
 # GENERATE 75 FIXED PLAYBOARDS (ONCE AT SERVER START)
 # =========================================================
 def generate_fixed_board(seed: int):
@@ -126,8 +131,9 @@ async def start_game(stake: int):
     STAKE_AMOUNT = STAKE_ROOMS[stake]
 
     while True:
-        db = SessionLocal()
-        game_manager.next_game()
+        # Increment per-stake game number
+        current_game_no = game_counters[stake]
+        game_counters[stake] += 1
 
         game["reservation_active"] = True
         game["called_numbers"] = []
@@ -135,7 +141,7 @@ async def start_game(stake: int):
 
         await manager.broadcast({
             "type": "new_round",
-            "game_no": game_manager.get_game_number(),
+            "game_no": f"{current_game_no:06}",
         }, stake)
 
         # ---------- RESERVATION ----------
@@ -147,7 +153,7 @@ async def start_game(stake: int):
                 "reserved_numbers": [u["selected_number"] for u in game["users"].values()],
                 "players": len(game["users"]),
                 "derash": float(len(game["users"]) * STAKE_AMOUNT),
-                "game_no": game_manager.get_game_number(),
+                "game_no": f"{current_game_no:06}",
             }, stake)
             await sleep(1)
 
@@ -170,7 +176,7 @@ async def start_game(stake: int):
                 "type": "number_called",
                 "number": num,
                 "called_numbers": game["called_numbers"],
-                "game_no": game_manager.get_game_number(),
+                "game_no": f"{current_game_no:06}",
             }, stake)
 
             winners = []
@@ -184,29 +190,32 @@ async def start_game(stake: int):
                     winners.append(ws_id)
 
             if winners:
-                winner_id = winners[0]
-                winner = game["users"][winner_id]
+                db = SessionLocal()
+                try: 
+                    winner_id = winners[0]
+                    winner = game["users"][winner_id]
+                    total = STAKE_AMOUNT * len(game["users"])
+                    db_user = db.query(User).filter(User.id == winner["user_id"]).first()
+                    db_user.balance += total
 
-                total = STAKE_AMOUNT * len(game["users"])
-                db_user = db.query(User).filter(User.id == winner["user_id"]).first()
-                db_user.balance += total
-
-                db.add(Transaction(
-                    user_id=db_user.id,
-                    type="deposit",
-                    amount=total,
-                    stake_amount=STAKE_AMOUNT,
-                    game_no=game_manager.get_game_number(),
-                    reason="Bingo win",
-                ))
-                db.commit()
+                    db.add(Transaction(
+                        user_id=db_user.id,
+                        type="deposit",
+                        amount=total,
+                        stake_amount=STAKE_AMOUNT,
+                        game_no=game_manager.get_game_number(),
+                        reason="Bingo win",
+                    ))
+                    db.commit()
+                finally:
+                    db.close()
 
                 await manager.broadcast({
                     "type": "winner",
                     "winner_id": winner_id,
                     "winning_number": winner["selected_number"],
                     "winning_cells": winner["winning_cells"],
-                    "game_no": game_manager.get_game_number(),
+                    "game_no": f"{current_game_no:06}",
                 }, stake)
                 break
 
@@ -232,22 +241,33 @@ async def websocket_endpoint(websocket: WebSocket):
         return
 
     payload = decode_access_token(token)
+    if not payload:
+        await websocket.close(code=1008)
+        return
+
     user_id = payload.get("sub")
+    if not user_id:
+        await websocket.close(code=1008)
+        return
+    print("WS TOKEN:", token)
+    print("WS PAYLOAD:", payload)
 
     db = SessionLocal()
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        await websocket.close()
-        return
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            await websocket.close()
+            return
+    finally:
+        db.close()
 
     ws_id = str(user.id)
     game = games[stake]
 
     await manager.connect(websocket, stake)
 
-    if not game["started"]:
-        game["started"] = True
-        create_task(start_game(stake))
+    if not game.get("task"):
+        game["task"] = create_task(start_game(stake))
 
     try:
         user_state = game["users"].get(ws_id)
@@ -277,89 +297,108 @@ async def websocket_endpoint(websocket: WebSocket):
                 number = data["number"]
                 user_state = game["users"].get(ws_id)
 
-                # =====================================================
-                # DESELECT (CLICK SAME NUMBER AGAIN)
-                # =====================================================
-                if user_state and user_state["selected_number"] == number:
-                    # 🔁 Refund stake
-                    user.balance += STAKE_ROOMS[stake]
+                db = SessionLocal()
+                try:
+                    db_user = db.query(User).filter(User.id == user_id).with_for_update().first()
+                    if not db_user:
+                        continue
+
+                    # ==========================================
+                    # DESELECT (REFUND)
+                    # ==========================================
+                    if user_state and user_state["selected_number"] == number:
+                        db_user.balance += STAKE_ROOMS[stake]
+
+                        db.add(Transaction(
+                            user_id=db_user.id,
+                            type="deposit",
+                            amount=STAKE_ROOMS[stake],
+                            stake_amount=STAKE_ROOMS[stake],
+                            reason="Bingo stake refund",
+                        ))
+
+                        del game["users"][ws_id]
+                        db.commit()
+
+                        await manager.broadcast({
+                            "type": "number_reserved",
+                            "reserved_numbers": [u["selected_number"] for u in game["users"].values()],
+                            "players": len(game["users"]),
+                            "derash": float(len(game["users"]) * STAKE_ROOMS[stake]),
+                            "user_id": ws_id,
+                            "selected_number": None,
+                            "playboard": [],
+                            "marked_numbers": [],
+                        }, stake)
+                        continue
+
+                    # ==========================================
+                    # ALREADY RESERVED BY OTHERS
+                    # ==========================================
+                    if number in [u["selected_number"] for u in game["users"].values()]:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Number already reserved",
+                        })
+                        continue
+
+                    # ==========================================
+                    # ALREADY STAKED (CHANGE NUMBER BLOCK)
+                    # ==========================================
+                    if user_state:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "You already reserved a number",
+                        })
+                        continue
+
+                    # ==========================================
+                    # CHECK BALANCE
+                    # ==========================================
+                    if db_user.balance < STAKE_ROOMS[stake]:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Insufficient balance",
+                        })
+                        continue
+
+                    # ==========================================
+                    # FIRST RESERVATION (WITHDRAW)
+                    # ==========================================
+                    db_user.balance -= STAKE_ROOMS[stake]
+
                     db.add(Transaction(
-                        user_id=user.id,
-                        type="deposit",
+                        user_id=db_user.id,
+                        type="withdraw",
                         amount=STAKE_ROOMS[stake],
                         stake_amount=STAKE_ROOMS[stake],
-                        reason="Bingo stake refund",
+                        reason="Bingo stake",
                     ))
+
+                    game["users"][ws_id] = {
+                        "user_id": db_user.id,
+                        "selected_number": number,
+                        "playboard": PLAYBOARDS[number],
+                        "marked_numbers": [],
+                        "eligible": True,
+                        "winner": False,
+                    }
+
                     db.commit()
 
-                    # ❌ Remove user from game
-                    del game["users"][ws_id]
-
-                    # 📢 Broadcast removal
                     await manager.broadcast({
                         "type": "number_reserved",
                         "reserved_numbers": [u["selected_number"] for u in game["users"].values()],
                         "players": len(game["users"]),
                         "derash": float(len(game["users"]) * STAKE_ROOMS[stake]),
                         "user_id": ws_id,
-                        "selected_number": None,
-                        "playboard": [],
+                        "selected_number": number,
+                        "playboard": PLAYBOARDS[number],
                         "marked_numbers": [],
                     }, stake)
-                    continue
 
-                # =====================================================
-                # ALREADY RESERVED BY SOMEONE ELSE
-                # =====================================================
-                if number in [u["selected_number"] for u in game["users"].values()]:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "Number already reserved",
-                    })
-                    continue
-
-                # =====================================================
-                # CHECK BALANCE
-                # =====================================================
-                if user.balance < STAKE_ROOMS[stake]:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "Insufficient balance",
-                    })
-                    continue
-
-                # =====================================================
-                # FIRST-TIME SELECTION
-                # =====================================================
-                user.balance -= STAKE_ROOMS[stake]
-                db.add(Transaction(
-                    user_id=user.id,
-                    type="withdraw",
-                    amount=STAKE_ROOMS[stake],
-                    stake_amount=STAKE_ROOMS[stake],
-                    reason="Bingo stake",
-                ))
-                db.commit()
-
-                game["users"][ws_id] = {
-                    "user_id": user.id,
-                    "selected_number": number,
-                    "playboard": PLAYBOARDS[number],  # fixed board
-                    "marked_numbers": [],
-                    "eligible": True,
-                    "winner": False,
-                }
-
-                await manager.broadcast({
-                    "type": "number_reserved",
-                    "reserved_numbers": [u["selected_number"] for u in game["users"].values()],
-                    "players": len(game["users"]),
-                    "derash": float(len(game["users"]) * STAKE_ROOMS[stake]),
-                    "user_id": ws_id,
-                    "selected_number": number,
-                    "playboard": PLAYBOARDS[number],
-                    "marked_numbers": [],
-                }, stake)
+                finally:
+                    db.close()
 
             # ---------- MARK NUMBER ----------
             elif data["type"] == "mark_number":
