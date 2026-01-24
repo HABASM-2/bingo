@@ -77,11 +77,15 @@ const DashboardHeader = ({
 );
 
 const DashboardHome = () => {
-  /* -------------------- STAKE -------------------- */
-  const [stake, setStake] = useState<number | null>(null);
-  const [wsReady, setWsReady] = useState(false);
+  // ------------------ Initialize stake from URL ------------------
+  const urlParams = new URLSearchParams(window.location.search);
+  const initialUrlStake = Number(urlParams.get("stake"));
+  const initialStake = AVAILABLE_STAKES.includes(initialUrlStake)
+    ? initialUrlStake
+    : null;
 
-  /* -------------------- GAME STATES -------------------- */
+  const [stake, setStake] = useState<number | null>(initialStake);
+  const [wsReady, setWsReady] = useState(false);
   const [reservationActive, setReservationActive] = useState(true);
   const [secondsLeft, setSecondsLeft] = useState(60);
   const [reservedNumbers, setReservedNumbers] = useState<number[]>([]);
@@ -99,7 +103,6 @@ const DashboardHome = () => {
   const [autoClick, setAutoClick] = useState(false);
   const [_gameStarted, setGameStarted] = useState(false);
 
-  /* -------------------- HEADER -------------------- */
   const [gameNo, setGameNo] = useState("000001");
   const [players, setPlayers] = useState(0);
   const [derash, setDerash] = useState(0);
@@ -107,36 +110,22 @@ const DashboardHome = () => {
 
   const token = localStorage.getItem("token");
 
-  /* -------------------- LOAD STAKE -------------------- */
+  // ------------------ Update stake if URL changes ------------------
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
-    const urlStake = params.get("stake");
+    const urlStake = Number(params.get("stake"));
 
-    // Get current localStorage stake and selected number
-    const savedStake = localStorage.getItem("bingo_stake");
-    const savedNumber = localStorage.getItem("bingo_selected_number");
-
-    // Case 1: user already in a game (reserved number) -> always use savedStake
-    if (savedNumber) {
-      setStake(savedStake ? Number(savedStake) : null);
-      return;
+    if (AVAILABLE_STAKES.includes(urlStake) && urlStake !== stake) {
+      setStake(urlStake);
+      localStorage.setItem("bingo_stake", String(urlStake));
+    } else if (!urlStake && !reservationActive) {
+      setStake(null);
+      localStorage.removeItem("bingo_stake");
+      localStorage.removeItem("bingo_selected_number");
     }
+  }, [reservationActive]);
 
-    // Case 2: no active game -> use URL stake if valid
-    if (urlStake && AVAILABLE_STAKES.includes(Number(urlStake))) {
-      const s = Number(urlStake);
-      setStake(s);
-      localStorage.setItem("bingo_stake", String(s));
-      return;
-    }
-
-    // Case 3: fallback to savedStake if URL is not valid
-    if (savedStake && AVAILABLE_STAKES.includes(Number(savedStake))) {
-      setStake(Number(savedStake));
-    }
-  }, []);
-
-  /* -------------------- WS -------------------- */
+  // ------------------ WebSocket ------------------
   const { sendJsonMessage, lastJsonMessage } = useWebSocket(
     stake ? getBingoWsUrl(token ?? undefined, stake) : null,
     {
@@ -148,7 +137,7 @@ const DashboardHome = () => {
     },
   );
 
-  /* -------------------- WS HANDLER -------------------- */
+  // ------------------ WS Handler ------------------
   useEffect(() => {
     if (!lastJsonMessage) return;
     const msg = lastJsonMessage as WSMessage;
@@ -190,12 +179,14 @@ const DashboardHome = () => {
           if (msg.selected_number == null) {
             setSelectedNumber(null);
             setPlayboard([]);
-            setMarkedNumbers([]);
-            setWinner(false);
+            localStorage.removeItem("bingo_selected_number");
           } else {
             setSelectedNumber(msg.selected_number);
             setPlayboard(msg.playboard ?? []);
-            setMarkedNumbers(msg.marked_numbers ?? []);
+            localStorage.setItem(
+              "bingo_selected_number",
+              String(msg.selected_number),
+            );
           }
         }
         break;
@@ -219,6 +210,7 @@ const DashboardHome = () => {
 
       case "no_players":
       case "new_round":
+        localStorage.removeItem("bingo_selected_number");
         setReservationActive(true);
         setSecondsLeft(60);
         setReservedNumbers([]);
@@ -241,46 +233,70 @@ const DashboardHome = () => {
     }
   }, [lastJsonMessage, wsId]);
 
-  /* -------------------- LOCAL COUNTDOWN -------------------- */
-  useEffect(() => {
-    if (reservationActive) return;
-    const interval = setInterval(
-      () => setSecondsLeft((s) => (s > 0 ? s - 1 : 0)),
-      1000,
-    );
-    return () => clearInterval(interval);
-  }, [reservationActive, lastNumber]);
+  // ------------------ Local Countdown ------------------
+  const joinStake = (s: number) => {
+    setStake(s);
+    localStorage.setItem("bingo_stake", String(s));
+    window.history.replaceState({}, "", `?stake=${s}`);
+  };
 
-  /* -------------------- SELECT NUMBER -------------------- */
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const urlStake = Number(params.get("stake"));
+
+    if (AVAILABLE_STAKES.includes(urlStake)) {
+      joinStake(urlStake);
+    }
+  }, []);
+
   const handleSelectNumber = (num: number) => {
     if (!reservationActive || !token) return;
     if (selectedNumber !== num) setSelectedNumber(num);
     sendJsonMessage({ type: "select_number", number: num });
   };
 
-  /* -------------------- RENDER -------------------- */
+  // ------------------ Render ------------------
   if (!stake) {
+    // Show lobby only if no stake
     return (
       <PhoneContainer>
-        <div className="p-3 h-full flex flex-col items-center justify-center text-white">
-          <h1 className="text-lg font-bold mb-4">Select a Stake to Start</h1>
-          {AVAILABLE_STAKES.map((s) => (
-            <button
-              key={s}
-              className="px-4 py-2 m-1 bg-emerald-500 rounded font-bold"
-              onClick={() => {
-                setStake(s);
-                localStorage.setItem("bingo_stake", String(s));
-              }}
-            >
-              {s}
-            </button>
-          ))}
+        <div className="p-4 text-white">
+          <h1 className="text-xl font-bold text-center mb-4">
+            🎯 Select Stake
+          </h1>
+          <table className="w-full text-center border border-zinc-700 rounded-lg overflow-hidden">
+            <thead className="bg-zinc-800 text-sm">
+              <tr>
+                <th className="p-2">Stake</th>
+                <th className="p-2">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {AVAILABLE_STAKES.map((s) => (
+                <tr key={s} className="border-t border-zinc-700">
+                  <td className="p-3 font-bold text-emerald-400">{s} Birr</td>
+                  <td>
+                    <button
+                      className="bg-emerald-500 px-4 py-1 rounded font-bold hover:bg-emerald-600"
+                      onClick={() => {
+                        setStake(s);
+                        localStorage.setItem("bingo_stake", String(s));
+                        window.history.replaceState({}, "", `?stake=${s}`);
+                      }}
+                    >
+                      Join
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </PhoneContainer>
     );
   }
 
+  // Game view
   return (
     <PhoneContainer>
       <div className="p-3 space-y-4 h-full overflow-y-auto">
@@ -290,7 +306,6 @@ const DashboardHome = () => {
           </p>
         )}
 
-        {/* Header */}
         <DashboardHeader
           gameNo={gameNo}
           derash={derash}
@@ -300,7 +315,6 @@ const DashboardHome = () => {
           toggleMute={() => setMuted((m) => !m)}
         />
 
-        {/* Title */}
         <h1 className="text-center text-lg font-bold text-emerald-400">
           {reservationActive
             ? "Select Your Number"
@@ -309,7 +323,6 @@ const DashboardHome = () => {
               : "Game is already started"}
         </h1>
 
-        {/* Bingo & Called Numbers */}
         <div className="grid grid-cols-12 gap-3">
           <div className="col-span-7">
             <BingoBoard
@@ -335,7 +348,6 @@ const DashboardHome = () => {
           </div>
         </div>
 
-        {/* Playboard */}
         {playboard.length > 0 && (
           <>
             <div className="flex items-center gap-2 mb-2 justify-center">
@@ -366,7 +378,6 @@ const DashboardHome = () => {
           </>
         )}
 
-        {/* Winner Modal */}
         {winnerId && (
           <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
             <div className="bg-black bg-opacity-70 px-6 py-4 rounded-xl text-center pointer-events-auto">
@@ -378,7 +389,6 @@ const DashboardHome = () => {
           </div>
         )}
 
-        {/* Footer countdown */}
         <p className="text-center text-sm text-gray-400">
           {reservationActive
             ? `Select your number (${secondsLeft}s left)`
@@ -386,7 +396,6 @@ const DashboardHome = () => {
         </p>
       </div>
 
-      {/* Error toast */}
       {errorMessage && (
         <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
           <div className="bg-red-600 bg-opacity-90 text-white px-6 py-4 rounded-xl text-center shadow-lg pointer-events-auto animate-fade-in">

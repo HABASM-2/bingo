@@ -4,7 +4,7 @@
 // export const API_URL = "http://10.55.29.239:8000";
 export const API_URL = "https://coraline-fabaceous-ungutturally.ngrok-free.dev";
 
-export const getBingoWsUrl = (token?: string, stake: number = 10) => {
+export const getBingoWsUrl = (token?: string, stake: number = 20) => {
   const wsBase = API_URL.startsWith("https")
     ? API_URL.replace("https", "wss")
     : API_URL.replace("http", "ws");

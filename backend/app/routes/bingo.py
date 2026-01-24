@@ -373,6 +373,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         amount=STAKE_ROOMS[stake],
                         stake_amount=STAKE_ROOMS[stake],
                         reason="Bingo stake",
+                        withdraw_status="completed"
                     ))
 
                     game["users"][ws_id] = {

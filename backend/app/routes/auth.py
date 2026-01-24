@@ -1,17 +1,17 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
-from decimal import Decimal
 
 from app.schemas.user import UserCreate, UserRead
-from app.schemas.wallet import WalletAction
+from app.schemas.wallet import WalletAction, UserWithdrawRequest
 from app.models.user import User
 from app.models.transaction import Transaction
 from app.core.security import hash_password, verify_password, create_access_token
 from app.deps import get_db, get_current_user, admin_required
 from app.models.transaction import Transaction
-import json
+from app.services.wallet import create_withdraw_request
 
 from app.routes.telegram_auth import verify_telegram
+from app.routes.telegram_bot import send_message
 
 router = APIRouter(prefix="/auth", tags=["Auth"])
 
@@ -149,10 +149,218 @@ def get_my_transactions(
 
     return [
         {
+            "id": str(t.id),
             "type": t.type,
             "amount": float(t.amount),
             "reason": t.reason,
             "created_at": t.created_at,
+            "withdraw_status": t.withdraw_status if t.type == "withdraw" else None
         }
         for t in txns
     ]
+
+@router.post("/withdraw/request")
+def request_withdraw(
+    payload: UserWithdrawRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    if payload.amount <= 0:
+        raise HTTPException(status_code=400, detail="Invalid amount")
+    if current_user.balance < payload.amount:
+        raise HTTPException(status_code=400, detail="Insufficient balance")
+
+    # Lock funds
+    tx = create_withdraw_request(
+        current_user,
+        payload.amount,
+        db,
+        payload.note or "User withdraw request"
+    )
+
+    return {
+        "message": "Withdraw request submitted",
+        "status": tx.withdraw_status,
+        "transaction": str(tx.id)
+    }
+
+@router.post("/withdraw/cancel/{tx_id}")
+def cancel_withdraw(
+    tx_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    tx = db.query(Transaction).filter(
+        Transaction.id == tx_id,
+        Transaction.user_id == current_user.id,
+        Transaction.type == "withdraw"
+    ).first()
+
+    if not tx:
+        raise HTTPException(status_code=404, detail="Withdraw not found")
+
+    if tx.withdraw_status != "pending":
+        raise HTTPException(status_code=400, detail="Cannot cancel at this stage")
+
+    # Return locked funds
+    current_user.balance += tx.amount
+    tx.withdraw_status = "cancelled"
+
+    db.commit()
+    return {"message": "Withdraw cancelled"}
+
+@router.get("/admin/withdraws")
+def get_withdraws(
+    db: Session = Depends(get_db),
+    admin: User = Depends(admin_required),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(10, ge=1, le=50),
+):
+    """
+    Get paginated withdraws for admin view.
+    Includes user telegram_username and telegram_first_name.
+    """
+    # Join Transaction with User table
+    query = (
+        db.query(Transaction, User)
+        .join(User, Transaction.user_id == User.id)
+        .filter(Transaction.type == "withdraw")
+        .order_by(Transaction.created_at.desc())
+    )
+
+    total = query.count()
+    txs = query.offset(skip).limit(limit).all()
+
+    result = []
+    for tx, user in txs:
+        row = {
+            "id": str(tx.id),
+            "user_id": str(tx.user_id),
+            "username": user.telegram_username,
+            "first_name": user.telegram_first_name,
+            "amount": float(tx.amount),
+            "status": tx.withdraw_status,
+            "date": tx.created_at,
+        }
+        if hasattr(tx, "bank") and tx.bank:
+            row["bank"] = tx.bank
+        if hasattr(tx, "account_number") and tx.account_number:
+            row["account_number"] = tx.account_number
+        result.append(row)
+
+    return {
+        "total": total,
+        "skip": skip,
+        "limit": limit,
+        "withdraws": result
+    }
+
+@router.post("/withdraw/update/{tx_id}")
+async def update_withdraw_status(
+    tx_id: str,
+    status: str,
+    db: Session = Depends(get_db),
+    admin: User = Depends(admin_required)
+):
+    """
+    Admin endpoint to mark a user withdraw as 'completed' or 'rejected'.
+    Sends Telegram notification to the user.
+    """
+    tx = db.query(Transaction).filter(Transaction.id == tx_id).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Withdraw transaction not found")
+
+    if tx.type != "withdraw":
+        raise HTTPException(status_code=400, detail="Transaction is not a withdraw")
+
+    if tx.withdraw_status in ["completed", "rejected", "cancelled"]:
+        raise HTTPException(status_code=400, detail=f"Transaction already {tx.withdraw_status}")
+
+    if status not in ["completed", "rejected"]:
+        raise HTTPException(status_code=400, detail="Invalid status. Use 'completed' or 'rejected'")
+
+    user = db.query(User).filter(User.id == tx.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Handle rejected: refund user
+    if status == "rejected":
+        user.balance += tx.amount
+        tx.reason = (tx.reason or "") + " | Rejected by admin"
+
+    # Update status
+    tx.withdraw_status = status
+    db.commit()
+    db.refresh(tx)
+
+    # --- Telegram notification ---
+    if user.telegram_id:
+        try:
+            text = (
+                f"💸 Your withdrawal of ${tx.amount:.2f} has been {status}.\n"
+                f"Current balance: ${user.balance:.2f}"
+            )
+            await send_message(user.telegram_id, text)
+        except Exception as e:
+            print("Failed to send Telegram message:", e)
+
+    return {
+        "message": f"Withdraw transaction {tx_id} marked as '{status}'",
+        "user_id": str(tx.user_id),
+        "amount": float(tx.amount),
+        "status": tx.withdraw_status
+    }
+
+@router.post("/admin/withdraw/update/{tx_id}")
+async def admin_update_withdraw_status(
+    tx_id: str,
+    status: str,
+    db: Session = Depends(get_db),
+    admin: User = Depends(admin_required),
+):
+    """
+    Admin endpoint to update user withdraw status and notify via Telegram.
+    """
+    tx = db.query(Transaction).filter(Transaction.id == tx_id).first()
+    if not tx:
+        raise HTTPException(status_code=404, detail="Withdraw transaction not found")
+
+    if tx.type != "withdraw":
+        raise HTTPException(status_code=400, detail="Transaction is not a withdraw")
+
+    if tx.withdraw_status in ["completed", "rejected", "cancelled"]:
+        raise HTTPException(status_code=400, detail=f"Transaction already {tx.withdraw_status}")
+
+    if status not in ["processing", "completed", "rejected"]:
+        raise HTTPException(status_code=400, detail="Invalid status. Use 'completed' or 'rejected'")
+
+    user = db.query(User).filter(User.id == tx.user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # Refund if rejected
+    if status == "rejected":
+        user.balance += tx.amount
+        tx.reason = (tx.reason or "") + " | Rejected by admin"
+
+    # Update status
+    tx.withdraw_status = status
+    db.commit()
+    db.refresh(tx)
+
+    # Telegram notification
+    if user.telegram_id:
+        try:
+            await send_message(
+                user.telegram_id,
+                f"💸 Your withdrawal of ${tx.amount:.2f} has been {status}.\nCurrent balance: ${user.balance:.2f}"
+            )
+        except Exception as e:
+            print("Failed to send Telegram message:", e)
+
+    return {
+        "message": f"Withdraw transaction {tx_id} marked as '{status}'",
+        "user_id": str(tx.user_id),
+        "amount": float(tx.amount),
+        "status": tx.withdraw_status
+    }

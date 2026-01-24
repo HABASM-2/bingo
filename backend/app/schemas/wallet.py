@@ -6,3 +6,7 @@ class WalletAction(BaseModel):
     user_id: UUID
     amount: Decimal
     note: str | None = None  # optional admin note
+
+class UserWithdrawRequest(BaseModel):
+    amount: Decimal
+    note: str | None = None

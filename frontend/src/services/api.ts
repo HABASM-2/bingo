@@ -50,3 +50,49 @@ export async function getMyTransactions() {
   if (!res.ok) throw new Error("Failed to fetch transactions");
   return res.json();
 }
+
+export async function requestWithdraw(token: string, amount: number, note?: string) {
+  return fetch("/auth/withdraw/request", {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ amount, note }), // ✅ match UserWithdrawRequest schema
+  });
+}
+
+export async function cancelWithdraw(token: string, txId: string) {
+  const res = await fetch(`/auth/withdraw/cancel/${txId}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!res.ok) throw new Error("Cancel failed");
+  return res.json();
+}
+
+export async function getAllWithdraws(token: string, skip = 0, limit = 10) {
+  const res = await fetch(`${API_URL}/auth/admin/withdraws?skip=${skip}&limit=${limit}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error("Failed to fetch withdraws");
+  return res.json(); // returns { total, skip, limit, withdraws }
+}
+
+export async function updateWithdrawStatus(
+  token: string,
+  txId: string,
+  status: string
+) {
+  const res = await fetch(
+    `/auth/admin/withdraw/update/${txId}?status=${status}`,
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+
+  if (!res.ok) throw new Error("Failed to update status");
+  return res.json();
+}
