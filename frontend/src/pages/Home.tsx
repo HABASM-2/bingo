@@ -108,7 +108,27 @@ const DashboardHome = () => {
   const [derash, setDerash] = useState(0);
   const [muted, setMuted] = useState(false);
 
+  const [stakesStatus, setStakesStatus] = useState<Record<
+    number,
+    {
+      reservation_active: boolean;
+      seconds_left: number;
+      players: number;
+      derash: number;
+      game_no: number;
+    }
+  > | null>(null);
+
   const token = localStorage.getItem("token");
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetch("/bingo/status")
+        .then((res) => res.json())
+        .then((data) => setStakesStatus(data));
+    }, 3000);
+    return () => clearInterval(interval);
+  }, []);
 
   // ------------------ Update stake if URL changes ------------------
   useEffect(() => {
@@ -272,23 +292,39 @@ const DashboardHome = () => {
               </tr>
             </thead>
             <tbody>
-              {AVAILABLE_STAKES.map((s) => (
-                <tr key={s} className="border-t border-zinc-700">
-                  <td className="p-3 font-bold text-emerald-400">{s} Birr</td>
-                  <td>
-                    <button
-                      className="bg-emerald-500 px-4 py-1 rounded font-bold hover:bg-emerald-600"
-                      onClick={() => {
-                        setStake(s);
-                        localStorage.setItem("bingo_stake", String(s));
-                        window.history.replaceState({}, "", `?stake=${s}`);
-                      }}
-                    >
-                      Join
-                    </button>
-                  </td>
-                </tr>
-              ))}
+              {AVAILABLE_STAKES.map((s) => {
+                const status = stakesStatus?.[s];
+                return (
+                  <tr key={s} className="border-t border-zinc-700">
+                    <td className="p-3 font-bold text-emerald-400">{s} Birr</td>
+                    <td>
+                      {status ? (
+                        <div className="flex flex-col gap-1 text-xs text-white">
+                          <span>
+                            Status:{" "}
+                            {status.reservation_active
+                              ? "Countdown"
+                              : "Playing"}
+                          </span>
+                          <span>Players: {status.players}</span>
+                          <span>Derash: {status.derash} Birr</span>
+                          <span>Game #: {status.game_no}</span>
+                        </div>
+                      ) : (
+                        <span className="text-gray-400">Loading...</span>
+                      )}
+                    </td>
+                    <td>
+                      <button
+                        className="bg-emerald-500 px-4 py-1 rounded font-bold hover:bg-emerald-600"
+                        onClick={() => joinStake(s)}
+                      >
+                        Join
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

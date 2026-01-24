@@ -24,6 +24,21 @@ STAKE_ROOMS: Dict[int, Decimal] = {
 GAME_RESERVATION_TIME = 60
 CALL_INTERVAL = 4
 
+
+@router.get("/status")
+async def bingo_status():
+    status = {}
+    for stake, game in games.items():
+        STAKE_AMOUNT = STAKE_ROOMS[stake]
+        status[stake] = {
+            "reservation_active": game["reservation_active"],
+            "seconds_left": GAME_RESERVATION_TIME if game["reservation_active"] else 0,
+            "players": len(game["users"]),
+            "derash": float(len(game["users"]) * STAKE_AMOUNT),
+            "game_no": game_counters[stake],
+        }
+    return status
+
 # =========================================================
 # PER-STAKE GAME COUNTERS
 # =========================================================
