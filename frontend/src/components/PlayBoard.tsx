@@ -5,24 +5,26 @@ type Props = {
   calledNumbers: number[];
   winningCells: [number, number][];
   wsId: string | null;
+  winnerIds: string[]; // ✅ MULTI
   sendJsonMessage: (msg: any) => void;
   markedNumbers: number[];
   setMarkedNumbers: (nums: number[]) => void;
-  onError: (msg: string) => void; // existing
-  autoClick?: boolean; // ✅ new prop
+  onError: (msg: string) => void;
+  autoClick?: boolean;
 };
 
 const PlayBoard = ({
   playboard,
   calledNumbers,
   winningCells,
+  wsId,
+  winnerIds, // ✅ add this
   sendJsonMessage,
   markedNumbers,
   onError,
   autoClick = false, // default false
 }: Props) => {
   const labels = ["B", "I", "N", "G", "O"];
-  const safeWinningCells = winningCells ?? [];
 
   const labelColors: Record<string, string> = {
     B: "bg-red-400 text-white",
@@ -69,7 +71,7 @@ const PlayBoard = ({
       handleClick(lastCalled); // automatically mark the number
     }
   }, [calledNumbers, autoClick]); // triggers on new called numbers
-
+  const isWinner = winnerIds.includes(wsId ?? "");
   // ---------------- RENDER ----------------
   return (
     <div className="mt-2 space-y-1 w-1/2 mx-auto">
@@ -96,19 +98,22 @@ const PlayBoard = ({
           const col = idx % 5;
 
           const isFree = num === 0;
-          const isWinning = safeWinningCells.some(
-            ([r, c]) => r === row && c === col,
-          );
+          const isWinning =
+            isWinner && winningCells.some(([r, c]) => r === row && c === col);
           const isMarked = markedNumbers.includes(num);
 
           const lastCalled = calledNumbers[calledNumbers.length - 1];
 
-          let bgClass = "bg-gray-100 text-gray-800"; // default off-white
+          let bgClass = "bg-gray-100 text-gray-800"; // default
 
+          // Highlight only winning cells for winners
           if (isWinning) bgClass = "bg-green-600 text-white animate-pulse";
           else if (isFree) bgClass = "bg-green-300 text-white";
           else if (isMarked) bgClass = "bg-green-500 text-white";
-          else if (num === lastCalled)
+          else bgClass = "bg-gray-100 text-gray-800";
+
+          // Optionally highlight last called number for your own card
+          if (!isWinning && num === lastCalled && playboard.includes(num))
             bgClass = "bg-yellow-300 text-black animate-pulse";
 
           return (

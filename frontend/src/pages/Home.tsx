@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import React from "react";
 import useWebSocket from "react-use-websocket";
 import PhoneContainer from "../components/PhoneContainer";
 import BingoBoard from "../components/BingoBoard";
@@ -20,9 +21,12 @@ type WSMessage = {
   playboard?: number[];
   number?: number;
   called_numbers?: number[];
-  winner_id?: string;
+
+  // ✅ MULTI WINNER
+  winner_ids?: string[];
   winning_number?: number;
-  winning_cells?: [number, number][];
+  winning_cells?: [number, number][][]; // cells per winner
+
   marked_numbers?: number[];
   message?: string;
   game_no?: string;
@@ -93,9 +97,9 @@ const DashboardHome = () => {
   const [playboard, setPlayboard] = useState<number[]>([]);
   const [calledNumbers, setCalledNumbers] = useState<number[]>([]);
   const [lastNumber, setLastNumber] = useState<number | undefined>();
-  const [winnerId, setWinnerId] = useState<string | null>(null);
-  const [winningNumber, setWinningNumber] = useState<number | null>(null);
+  const [winnerIds, setWinnerIds] = useState<string[]>([]);
   const [winningCells, setWinningCells] = useState<[number, number][]>([]);
+  const [winningNumber, setWinningNumber] = useState<number | null>(null);
   const [wsId, setWsId] = useState<string | null>(null);
   const [_winner, setWinner] = useState(false);
   const [markedNumbers, setMarkedNumbers] = useState<number[]>([]);
@@ -106,7 +110,26 @@ const DashboardHome = () => {
   const [gameNo, setGameNo] = useState("000001");
   const [players, setPlayers] = useState(0);
   const [derash, setDerash] = useState(0);
-  const [muted, setMuted] = useState(false);
+  const [muted, setMuted] = useState(true);
+
+  const audioUnlockedRef = React.useRef(false);
+
+  const [announcement, setAnnouncement] = useState<string | null>(null);
+  const [announcementType, setAnnouncementType] = useState<
+    "info" | "error" | "success"
+  >("info");
+
+  const audioRef = React.useRef<HTMLAudioElement | null>(null);
+
+  const playNumberAudio = (num: number) => {
+    if (muted || !audioUnlockedRef.current) return;
+
+    const audio = new Audio(`/web/audio/${num}.mp3`);
+    audioRef.current = audio;
+    audio.volume = 1;
+
+    audio.play().catch(() => {});
+  };
 
   const [stakesStatus, setStakesStatus] = useState<Record<
     number,
@@ -166,10 +189,64 @@ const DashboardHome = () => {
     if (typeof msg.players === "number") setPlayers(msg.players);
     if (typeof msg.derash === "number") setDerash(msg.derash);
 
+    // Clear any existing countdown
+    let countdownInterval: number;
+
+    const startCountdown = (seconds: number) => {
+      setSecondsLeft(seconds);
+      clearInterval(countdownInterval);
+      countdownInterval = window.setInterval(() => {
+        setSecondsLeft((prev) => {
+          if (prev <= 1) {
+            clearInterval(countdownInterval);
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    };
+
+    // Helper to reset user/game state
+    const resetGameState = (
+      announcementMsg: string,
+      type: "info" | "error" | "success" = "info",
+    ) => {
+      setAnnouncement(announcementMsg);
+      setAnnouncementType(type);
+      setWinnerIds([]);
+      setSelectedNumber(null);
+      setPlayboard([]);
+      setMarkedNumbers([]);
+      setReservedNumbers([]);
+      localStorage.removeItem("bingo_selected_number");
+
+      setReservationActive(true);
+      setSecondsLeft(60);
+      setCalledNumbers([]);
+      setLastNumber(undefined);
+      setWinnerIds([]);
+      setWinningNumber(null);
+      setWinningCells([]);
+      setWinner(false);
+      setGameStarted(false);
+
+      // Optional sound for important messages
+      if (type === "error") {
+        const audio = new Audio("/web/audio/alert.mp3");
+        audio.volume = 0.8;
+        audio.play().catch(() => {});
+      }
+
+      setTimeout(() => {
+        setAnnouncement(null);
+        setAnnouncementType("info");
+      }, 5000);
+    };
+
     switch (msg.type) {
       case "init":
         setReservationActive(msg.reservation_active ?? true);
-        setSecondsLeft(msg.seconds_left ?? 60);
+        startCountdown(msg.seconds_left ?? 60);
         setGameStarted(!(msg.reservation_active ?? true));
         setReservedNumbers(msg.reserved_numbers ?? []);
         if (!wsId) setWsId(msg.user_id ?? null);
@@ -183,13 +260,20 @@ const DashboardHome = () => {
 
       case "reservation":
         setReservationActive(msg.reservation_active ?? true);
-        setSecondsLeft(msg.seconds_left ?? 60);
         setReservedNumbers(msg.reserved_numbers ?? []);
+        startCountdown(msg.seconds_left ?? 60);
+        break;
+
+      case "number_called":
+        setCalledNumbers(msg.called_numbers ?? []);
+        setLastNumber(msg.number);
+        startCountdown(msg.seconds_left ?? 3); // Use backend CALL_INTERVAL
+        if (msg.number) playNumberAudio(msg.number);
         break;
 
       case "reservation_end":
         setReservationActive(false);
-        setSecondsLeft(3);
+        startCountdown(3); // short countdown before starting game
         setGameStarted(true);
         break;
 
@@ -211,17 +295,21 @@ const DashboardHome = () => {
         }
         break;
 
-      case "number_called":
-        setCalledNumbers(msg.called_numbers ?? []);
-        setLastNumber(msg.number);
-        setSecondsLeft(3);
+      case "winner_announcement":
+        setAnnouncement(`🎉 Player won Bingo!`);
         break;
 
       case "winner":
-        setWinnerId(msg.winner_id ?? null);
         setWinningNumber(msg.winning_number ?? null);
-        setWinningCells(msg.winning_cells ?? []);
-        if (msg.winner_id === wsId) setWinner(true);
+        setWinnerIds(msg.winner_ids ?? []);
+
+        // If YOU are one of winners, assign YOUR cells
+        if (wsId && msg.winner_ids && msg.winning_cells) {
+          const index = msg.winner_ids.indexOf(wsId);
+          if (index !== -1) {
+            setWinningCells(msg.winning_cells[index] ?? []);
+          }
+        }
         break;
 
       case "marked_numbers":
@@ -230,27 +318,27 @@ const DashboardHome = () => {
 
       case "no_players":
       case "new_round":
-        localStorage.removeItem("bingo_selected_number");
-        setReservationActive(true);
-        setSecondsLeft(60);
-        setReservedNumbers([]);
-        setSelectedNumber(null);
-        setPlayboard([]);
-        setCalledNumbers([]);
-        setLastNumber(undefined);
-        setWinnerId(null);
-        setWinningNumber(null);
-        setWinningCells([]);
-        setWinner(false);
-        setMarkedNumbers([]);
-        setGameStarted(false);
+        resetGameState("New round started", "info");
         break;
 
       case "error":
         setErrorMessage(msg.message ?? "An error occurred");
         setTimeout(() => setErrorMessage(null), 3000);
         break;
+
+      case "refund":
+        resetGameState(msg.message ?? "Game canceled. Stake refunded.", "info");
+        break;
+
+      case "round_cancelled":
+        resetGameState(
+          msg.message ?? "Round cancelled — not enough players",
+          "error",
+        );
+        break;
     }
+
+    return () => clearInterval(countdownInterval);
   }, [lastJsonMessage, wsId]);
 
   // ------------------ Local Countdown ------------------
@@ -335,6 +423,17 @@ const DashboardHome = () => {
   // Game view
   return (
     <PhoneContainer>
+      {announcement && (
+        <div
+          className={`fixed top-4 left-1/2 -translate-x-1/2 px-4 py-2 rounded-xl shadow-lg z-50 animate-fade-in
+      ${announcementType === "info" ? "bg-yellow-400 text-black" : ""}
+      ${announcementType === "error" ? "bg-red-600 text-white" : ""}
+      ${announcementType === "success" ? "bg-green-500 text-white" : ""}
+    `}
+        >
+          <p className="font-bold">{announcement}</p>
+        </div>
+      )}
       <div className="p-3 space-y-4 h-full overflow-y-auto">
         {!wsReady && (
           <p className="text-center text-white mt-10">
@@ -348,7 +447,33 @@ const DashboardHome = () => {
           players={players}
           called={calledNumbers.length}
           muted={muted}
-          toggleMute={() => setMuted((m) => !m)}
+          toggleMute={() => {
+            setMuted((prev) => {
+              const next = !prev;
+
+              // First time user enables sound → unlock audio
+              if (!next && !audioUnlockedRef.current) {
+                const unlock = new Audio("web/audio/1.mp3");
+                unlock.volume = 0;
+                unlock
+                  .play()
+                  .then(() => {
+                    unlock.pause();
+                    unlock.currentTime = 0;
+                    audioUnlockedRef.current = true;
+                  })
+                  .catch(() => {});
+              }
+
+              // If muting while sound playing → stop it
+              if (next && audioRef.current) {
+                audioRef.current.pause();
+                audioRef.current.currentTime = 0;
+              }
+
+              return next;
+            });
+          }}
         />
 
         <h1 className="text-center text-lg font-bold text-emerald-400">
@@ -397,11 +522,24 @@ const DashboardHome = () => {
                 Auto-Click Numbers
               </label>
             </div>
+            {playboard.length > 0 && !autoClick && (
+              <div className="flex justify-center mb-2">
+                <button
+                  className="bg-yellow-400 px-4 py-2 rounded font-bold hover:bg-yellow-500"
+                  onClick={() => {
+                    sendJsonMessage({ type: "bingo_claim" });
+                  }}
+                >
+                  🎉 Bingo!
+                </button>
+              </div>
+            )}
             <PlayBoard
               playboard={playboard}
               calledNumbers={calledNumbers}
               winningCells={winningCells}
               wsId={wsId}
+              winnerIds={winnerIds} // ✅ NEW
               sendJsonMessage={sendJsonMessage}
               markedNumbers={markedNumbers}
               setMarkedNumbers={setMarkedNumbers}
@@ -414,12 +552,12 @@ const DashboardHome = () => {
           </>
         )}
 
-        {winnerId && (
+        {winnerIds.length > 0 && (
           <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
             <div className="bg-black bg-opacity-70 px-6 py-4 rounded-xl text-center pointer-events-auto">
               <p className="text-yellow-400 font-extrabold text-2xl">
                 🎉 Bingo Winner: Number {winningNumber}
-                {winnerId === wsId && " (YOU)"}
+                {wsId && winnerIds.includes(wsId) && " (YOU)"}
               </p>
             </div>
           </div>

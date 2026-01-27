@@ -172,13 +172,39 @@ async def start_game(stake: int):
             }, stake)
             await sleep(1)
 
+        # ---------- AFTER RESERVATION PERIOD ----------
         game["reservation_active"] = False
         await manager.broadcast({"type": "reservation_end"}, stake)
 
-        if not game["users"]:
-            await manager.broadcast({"type": "no_players"}, stake)
-            await sleep(3)
-            continue
+        # ---------- CHECK PLAYER COUNT ----------
+        if len(game["users"]) < 2:
+            db = SessionLocal()
+            try:
+                for ws_id, user in list(game["users"].items()):
+                    db_user = db.query(User).filter(User.id == user["user_id"]).with_for_update().first()
+                    if db_user:
+                        db_user.balance += STAKE_ROOMS[stake]
+                        db.add(Transaction(
+                            user_id=db_user.id,
+                            type="deposit",
+                            amount=STAKE_ROOMS[stake],
+                            stake_amount=STAKE_ROOMS[stake],
+                            reason="Not enough players",
+                        ))
+                db.commit()
+            finally:
+                db.close()
+
+            # Notify players
+            await manager.broadcast({
+                "type": "round_cancelled",
+                "message": "Not enough players.",
+            }, stake)
+
+            # Reset game users
+            game["users"] = {}
+            await sleep(3)  # small delay before next round
+            continue  # skip number calling and go to next round
 
         # ---------- NUMBER CALLING ----------
         numbers = list(range(1, 76))
@@ -186,13 +212,6 @@ async def start_game(stake: int):
 
         for num in numbers:
             game["called_numbers"].append(num)
-
-            await manager.broadcast({
-                "type": "number_called",
-                "number": num,
-                "called_numbers": game["called_numbers"],
-                "game_no": f"{current_game_no:06}",
-            }, stake)
 
             winners = []
             for ws_id, user in game["users"].items():
@@ -205,38 +224,66 @@ async def start_game(stake: int):
                     winners.append(ws_id)
 
             if winners:
+                # Process winner payout immediately
                 db = SessionLocal()
-                try: 
-                    winner_id = winners[0]
-                    winner = game["users"][winner_id]
-                    total = STAKE_AMOUNT * len(game["users"])
-                    db_user = db.query(User).filter(User.id == winner["user_id"]).first()
-                    db_user.balance += total
+                try:
+                    player_count = len(game["users"])
+                    total_derash = STAKE_AMOUNT * player_count
 
-                    db.add(Transaction(
-                        user_id=db_user.id,
-                        type="deposit",
-                        amount=total,
-                        stake_amount=STAKE_AMOUNT,
-                        game_no=game_manager.get_game_number(),
-                        reason="Bingo win",
-                    ))
+                    # House cut logic
+                    if player_count <= 3:
+                        payout_pool = total_derash  # 100%
+                    else:
+                        payout_pool = total_derash * Decimal("0.8")  # 80%
+
+                    # Divide equally among winners
+                    payout_per_winner = (payout_pool / Decimal(len(winners))).quantize(Decimal("0.01"))
+
+                    for winner_id in winners:
+                        winner = game["users"][winner_id]
+                        db_user = db.query(User).filter(User.id == winner["user_id"]).with_for_update().first()
+                        if not db_user:
+                            continue
+
+                        db_user.balance += payout_per_winner
+
+                        db.add(Transaction(
+                            user_id=db_user.id,
+                            type="deposit",
+                            amount=payout_per_winner,
+                            stake_amount=STAKE_AMOUNT,
+                            game_no=game_manager.get_game_number(),
+                            reason="Bingo win (shared)",
+                        ))
+
                     db.commit()
                 finally:
                     db.close()
 
+                # Broadcast winner immediately
                 await manager.broadcast({
                     "type": "winner",
-                    "winner_id": winner_id,
-                    "winning_number": winner["selected_number"],
-                    "winning_cells": winner["winning_cells"],
+                    "winner_ids": winners,  # ✅ list
+                    "winning_number": num,
+                    "winning_cells": [game["users"][w]["winning_cells"] for w in winners],
                     "game_no": f"{current_game_no:06}",
                 }, stake)
-                break
+
+                # ✅ Pause here so all players can see winner before next round
+                await sleep(5)  # 5 seconds (adjust as needed)
+
+                # Reset game state for next round
+                break  # exit number-calling loop
+
+            # Only broadcast number if no winner yet
+            await manager.broadcast({
+                "type": "number_called",
+                "number": num,
+                "called_numbers": game["called_numbers"],
+                "game_no": f"{current_game_no:06}",
+            }, stake)
 
             await sleep(CALL_INTERVAL)
-
-        await sleep(5)
 
 # =========================================================
 # WEBSOCKET ENDPOINT

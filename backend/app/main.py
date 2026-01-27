@@ -7,6 +7,7 @@ from app.routes import auth, bingo, admin
 from app.models import user
 from app.database_init import ensure_database
 from app.routes.telegram_bot import router as telegram_router
+from app.routes.sms_webhook import router as sms_router
 import os
 
 # --- ensure database exists ---
@@ -33,6 +34,7 @@ Base.metadata.create_all(bind=engine)
 app.include_router(bingo.router)
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(sms_router)
 
 # --- Serve React frontend from dist ---
 FRONTEND_DIST = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../frontend/dist"))

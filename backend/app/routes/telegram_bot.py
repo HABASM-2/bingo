@@ -7,6 +7,8 @@ from app.models.transaction import Transaction, WithdrawStatus
 from app.core.security import create_access_token
 from app.routes.telegram_auth import verify_telegram
 from decimal import Decimal, InvalidOperation
+from app.models.deposit import IncomingDeposit
+from app.routes.sms_webhook import parse_sms
 
 router = APIRouter(prefix="/telegram", tags=["Telegram"])
 
@@ -20,12 +22,13 @@ user_state = {}  # {telegram_id: {"status": ..., "stake": ...}}
 
 # Track transfer states
 transfer_state = {}  # {telegram_id: {"status": ..., "recipient": ..., "amount": ...}}
+deposit_state = {}  # {telegram_id: {"status": "awaiting_txid"}}
 
 def get_command_keyboard():
     return {
         "keyboard": [
             [{"text": "▶️ Play Bingo"}],
-            [{"text": "💰 My Balance"}, {"text": "💸 Withdraw"}, {"text": "🔄 Transfer"}],
+            [{"text": "💳 Deposit"}, {"text": "💰 My Balance"}, {"text": "💸 Withdraw"}, {"text": "🔄 Transfer"}],
             [{"text": "📢 Invite Friends"}, {"text": "📞 Support"}, {"text": "📖 How to Play"}]
         ],
         "resize_keyboard": True
@@ -183,34 +186,44 @@ async def telegram_webhook(req: Request):
 
             # Cancel pending withdrawal
             if callback_data == "withdraw_cancel":
-                pending_tx = db.query(Transaction).filter(
-                    Transaction.user_id == user.id,
-                    Transaction.type == "withdraw",
-                    Transaction.withdraw_status == WithdrawStatus.PENDING
-                ).first()
-                if pending_tx:
-                    user.balance += pending_tx.amount  # refund
-                    pending_tx.withdraw_status = WithdrawStatus.CANCELLED
-                    db.commit()
-                    withdraw_state.pop(telegram_id, None)
-                    await send_message(chat_id, f"❌ Pending withdrawal of ${pending_tx.amount:.2f} cancelled and refunded.")
-                else:
-                    await send_message(chat_id, "❌ No pending withdrawal to cancel.")
-                return {"ok": True}            
+                if telegram_id in withdraw_state:
+                    withdraw_state.pop(telegram_id)
+                    await send_message(chat_id, "❌ Withdrawal cancelled. You can now enter other commands.", reply_markup=get_command_keyboard())
+                return {"ok": True} 
+            if callback_data == "transfer_cancel":
+                if telegram_id in transfer_state:
+                    transfer_state.pop(telegram_id)
+                    await send_message(chat_id, "❌ Transfer cancelled. You can now enter other commands.", reply_markup=get_command_keyboard())
+                return {"ok": True}
 
+            if callback_data == "deposit_cancel":
+                if telegram_id in deposit_state:
+                    deposit_state.pop(telegram_id)
+                    await send_message(chat_id,
+                                    "❌ Deposit cancelled. You can now enter other commands.",
+                                    reply_markup=get_command_keyboard())
+                return {"ok": True}
+                
         # --- Multi-step withdrawal ---
         if state:
             status = state.get("status")
+
+            # Add Cancel button to every step
+            cancel_markup = {
+                "inline_keyboard": [
+                    [{"text": "❌ Cancel Withdrawal", "callback_data": "withdraw_cancel"}]
+                ]
+            }
 
             if status == "awaiting_amount" and text:
                 try:
                     amount = Decimal(text)
                 except InvalidOperation:
-                    await send_message(chat_id, "❌ Please enter a valid number (example: 25)")
+                    await send_message(chat_id, "❌ Please enter a valid number (example: 25)", reply_markup=cancel_markup)
                     return {"ok": True}
 
                 if amount > user.balance:
-                    await send_message(chat_id, f"❌ Insufficient balance. Your balance: ${user.balance:.2f}")
+                    await send_message(chat_id, f"❌ Insufficient balance. Your balance: ${user.balance:.2f}", reply_markup=cancel_markup)
                     return {"ok": True}
 
                 state["amount"] = amount
@@ -218,8 +231,9 @@ async def telegram_webhook(req: Request):
                 reply_markup = {
                     "inline_keyboard": [
                         [{"text": "Telebirr", "callback_data": "method_telebirr"},
-                         {"text": "CBE", "callback_data": "method_cbe"},
-                         {"text": "Abyssinia", "callback_data": "method_abyssinia"}]
+                        {"text": "CBE", "callback_data": "method_cbe"},
+                        {"text": "Abyssinia", "callback_data": "method_abyssinia"}],
+                        [{"text": "❌ Cancel Withdrawal", "callback_data": "withdraw_cancel"}]  # cancel option
                     ]
                 }
                 await send_message(chat_id, "💳 Select withdrawal method:", reply_markup=reply_markup)
@@ -254,21 +268,27 @@ async def telegram_webhook(req: Request):
         if state_transfer:
             status = state_transfer.get("status")
 
+            cancel_markup = {
+                "inline_keyboard": [
+                    [{"text": "❌ Cancel Transfer", "callback_data": "transfer_cancel"}]
+                ]
+            }
+
             # Step 1: Get recipient username
             if status == "awaiting_username" and text:
                 recipient_username = text.strip().lstrip("@")
                 recipient = db.query(User).filter(User.telegram_username == recipient_username).first()
                 if not recipient:
-                    await send_message(chat_id, f"❌ User @{recipient_username} not found. Please enter a valid Telegram username:")
+                    await send_message(chat_id, f"❌ User @{recipient_username} not found. Enter a valid username:", reply_markup=cancel_markup)
                     return {"ok": True}
                 if recipient.id == user.id:
-                    await send_message(chat_id, "❌ You cannot transfer money to yourself.")
+                    await send_message(chat_id, "❌ You cannot transfer money to yourself.", reply_markup=cancel_markup)
                     return {"ok": True}
 
                 state_transfer["recipient_username"] = recipient_username
                 state_transfer["recipient_id"] = recipient.id
                 state_transfer["status"] = "awaiting_amount"
-                await send_message(chat_id, f"💸 Enter the amount you want to transfer to @{recipient_username}:")
+                await send_message(chat_id, f"💸 Enter the amount you want to transfer to @{recipient_username}:", reply_markup=cancel_markup)
                 return {"ok": True}
 
             # Step 2: Get amount
@@ -276,22 +296,22 @@ async def telegram_webhook(req: Request):
                 try:
                     amount = Decimal(text.strip())
                 except InvalidOperation:
-                    await send_message(chat_id, "❌ Please enter a valid number (example: 25)")
+                    await send_message(chat_id, "❌ Please enter a valid number (example: 25)", reply_markup=cancel_markup)
                     return {"ok": True}
 
                 if amount <= 0:
-                    await send_message(chat_id, "❌ Amount must be greater than 0.")
+                    await send_message(chat_id, "❌ Amount must be greater than 0.", reply_markup=cancel_markup)
                     return {"ok": True}
 
                 if amount > user.balance:
-                    await send_message(chat_id, f"❌ Insufficient balance. Your balance: ${user.balance:.2f}")
+                    await send_message(chat_id, f"❌ Insufficient balance. Your balance: ${user.balance:.2f}", reply_markup=cancel_markup)
                     return {"ok": True}
 
                 recipient_id = state_transfer["recipient_id"]
                 recipient_username = state_transfer["recipient_username"]
                 recipient = db.query(User).filter(User.id == recipient_id).first()
                 if not recipient:
-                    await send_message(chat_id, f"❌ Recipient not found. Aborting transfer.")
+                    await send_message(chat_id, f"❌ Recipient not found. Aborting transfer.", reply_markup=get_command_keyboard())
                     transfer_state.pop(telegram_id, None)
                     return {"ok": True}
 
@@ -319,18 +339,58 @@ async def telegram_webhook(req: Request):
                 db.commit()
 
                 # Notify both users
-                await send_message(chat_id, f"✅ You have successfully transferred ${amount:.2f} to @{recipient.telegram_username}.\nYour new balance: ${user.balance:.2f}")
+                await send_message(chat_id, f"✅ You transferred ${amount:.2f} to @{recipient.telegram_username}. New balance: ${user.balance:.2f}")
                 if recipient.telegram_id:
                     try:
                         await send_message(
                             recipient.telegram_id,
-                            f"💰 You have received ${amount:.2f} from @{user.telegram_username or user.display_name}.\nYour new balance: ${recipient.balance:.2f}"
+                            f"💰 You received ${amount:.2f} from @{user.telegram_username or user.display_name}. New balance: ${recipient.balance:.2f}"
                         )
                     except Exception as e:
                         print("Failed to notify recipient:", e)
 
-                # Clear state
                 transfer_state.pop(telegram_id, None)
+                return {"ok": True}
+            
+            state = deposit_state.get(telegram_id)
+            if state and state.get("status") == "awaiting_txid" and text:
+                txid = text.strip()
+
+                dep = db.query(IncomingDeposit).filter_by(
+                    transaction_id=txid,
+                    is_matched=False
+                ).first()
+
+                if not dep:
+                    reply_markup = {
+                        "inline_keyboard": [
+                            [{"text": "❌ Cancel Deposit", "callback_data": "deposit_cancel"}]
+                        ]
+                    }
+                    await send_message(chat_id,
+                        "❌ Transaction not found or already used. "
+                        "Please try again or cancel the deposit.",
+                        reply_markup=reply_markup
+                    )
+                    return {"ok": True}
+
+                # CREDIT USER
+                user.balance += dep.amount
+                dep.is_matched = True
+                dep.matched_user_id = user.id
+
+                tx = Transaction(
+                    user_id=user.id,
+                    type="deposit",
+                    amount=dep.amount,
+                    stake_amount=0,
+                    reason=f"Deposit via {dep.provider}"
+                )
+                db.add(tx)
+                db.commit()
+
+                deposit_state.pop(telegram_id, None)  # ✅ clear state after success
+                await send_message(chat_id, f"✅ Deposit of ETB {dep.amount} confirmed and added to your balance!")
                 return {"ok": True}
     
         # --- Standard text commands ---
@@ -408,6 +468,59 @@ async def telegram_webhook(req: Request):
             transfer_state[telegram_id] = {"status": "awaiting_username"}
             await send_message(chat_id, "👤 Enter the Telegram username of the friend you want to transfer money to (without @):")
             return {"ok": True}
+        elif text in ["💳 Deposit", "/deposit"]:
+            # Start deposit process
+            deposit_state[telegram_id] = {"status": "awaiting_txid"}
+
+            accounts_text = (
+                "💰 To deposit, please use one of the following accounts:\n\n"
+                "📱 Telebirr (Recommended for speed): 0912 345 678\n"
+                "🏦 CBE Account: 1234567890\n"
+                "🏦 Abyssinia Account: 0987654321\n\n"
+                "➡️ After sending the money, reply here with your **Transaction ID** (only once)."
+            )
+
+            # Include Cancel button when starting
+            reply_markup = {
+                "inline_keyboard": [
+                    [{"text": "❌ Cancel Deposit", "callback_data": "deposit_cancel"}]
+                ]
+            }
+
+            await send_message(chat_id, accounts_text, reply_markup=reply_markup)
+    
+        elif text.startswith("Dear"):
+            parsed = parse_sms(text)
+            if not parsed:
+                await send_message(chat_id, "❌ Could not read payment SMS.")
+                return {"ok": True}
+
+            dep = db.query(IncomingDeposit).filter_by(
+                transaction_id=parsed["txid"],
+                amount=parsed["amount"],
+                is_matched=False
+            ).first()
+
+            if not dep:
+                await send_message(chat_id, "❌ Payment not found or already used.")
+                return {"ok": True}
+
+            # CREDIT USER
+            user.balance += dep.amount
+            dep.is_matched = True
+            dep.matched_user_id = user.id
+
+            tx = Transaction(
+                user_id=user.id,
+                type="deposit",
+                amount=dep.amount,
+                stake_amount=0,
+                reason=f"Auto deposit via {dep.provider}"
+            )
+            db.add(tx)
+            db.commit()
+
+            await send_message(chat_id, f"✅ Deposit of ETB {dep.amount} confirmed and added to your balance!")
         else:
             await send_message(chat_id, "❓ Unknown command. Try /hello for help.")
 
