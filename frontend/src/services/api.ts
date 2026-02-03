@@ -1,7 +1,5 @@
 import { API_URL } from "../config/api";
 
-// const API_URL = "http://10.55.29.239:8000";
-
 export async function login(email: string, password: string) {
   const res = await fetch(`${API_URL}/auth/login`, {
     method: "POST",

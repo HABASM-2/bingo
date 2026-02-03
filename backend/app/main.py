@@ -8,7 +8,12 @@ from app.models import user
 from app.database_init import ensure_database
 from app.routes.telegram_bot import router as telegram_router
 from app.routes.sms_webhook import router as sms_router
+from app.routes.overview import router as overview_router
+from app.routes.history import router as history_router
+
+from dotenv import load_dotenv
 import os
+load_dotenv()
 
 # --- ensure database exists ---
 ensure_database()
@@ -34,6 +39,8 @@ Base.metadata.create_all(bind=engine)
 app.include_router(bingo.router)
 app.include_router(auth.router)
 app.include_router(admin.router)
+app.include_router(overview_router)  # ✅ correct
+app.include_router(history_router)  # ✅ correct
 app.include_router(sms_router)
 
 # --- Serve React frontend from dist ---

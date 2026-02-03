@@ -10,6 +10,8 @@ from app.models.user import User
 from app.models.transaction import Transaction
 from app.core.security import decode_access_token
 
+from datetime import datetime, timedelta
+
 router = APIRouter(prefix="/bingo", tags=["Bingo"])
 
 # =========================================================
@@ -25,17 +27,27 @@ GAME_RESERVATION_TIME = 60
 CALL_INTERVAL = 4
 
 
+# Adjust /status endpoint
 @router.get("/status")
 async def bingo_status():
     status = {}
+    now = datetime.utcnow()
     for stake, game in games.items():
         STAKE_AMOUNT = STAKE_ROOMS[stake]
+
+        if game["reservation_active"]:
+            # Calculate remaining seconds
+            elapsed = (now - game.get("reservation_start", now)).total_seconds()
+            seconds_left = max(int(GAME_RESERVATION_TIME - elapsed), 0)
+        else:
+            seconds_left = 0
+
         status[stake] = {
             "reservation_active": game["reservation_active"],
-            "seconds_left": GAME_RESERVATION_TIME if game["reservation_active"] else 0,
+            "seconds_left": seconds_left,
             "players": len(game["users"]),
             "derash": float(len(game["users"]) * STAKE_AMOUNT),
-            "game_no": game_counters[stake],
+            "game_no": game_counters[stake]-1,
         }
     return status
 
@@ -104,6 +116,7 @@ manager = ConnectionManager()
 def create_game_state():
     return {
         "reservation_active": True,
+        "reservation_start": datetime.utcnow(), 
         "called_numbers": [],
         "users": {},  # ws_id -> user_state
         "started": False,
@@ -151,6 +164,7 @@ async def start_game(stake: int):
         game_counters[stake] += 1
 
         game["reservation_active"] = True
+        game["reservation_start"] = datetime.utcnow()
         game["called_numbers"] = []
         game["users"] = {}
 
@@ -252,7 +266,7 @@ async def start_game(stake: int):
                             type="deposit",
                             amount=payout_per_winner,
                             stake_amount=STAKE_AMOUNT,
-                            game_no=game_manager.get_game_number(),
+                            game_no=f"{current_game_no:06}",
                             reason="Bingo win (shared)",
                         ))
 
@@ -434,6 +448,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         type="withdraw",
                         amount=STAKE_ROOMS[stake],
                         stake_amount=STAKE_ROOMS[stake],
+                        game_no=f"{game_counters[stake]:06}",  # 🔥 LINK TO GAME
                         reason="Bingo stake",
                         withdraw_status="completed"
                     ))

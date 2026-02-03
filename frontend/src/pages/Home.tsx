@@ -8,6 +8,8 @@ import PlayBoard from "../components/PlayBoard";
 import NumberCaller from "../components/NumberCaller";
 import { Volume2, VolumeX } from "lucide-react";
 import { getBingoWsUrl } from "../config/api";
+import { useLang } from "../useLang";
+import { t } from "../i18n";
 
 const AVAILABLE_STAKES = [10, 20, 50];
 
@@ -47,7 +49,22 @@ const HeaderStat = ({
   </div>
 );
 
+// Helper to render floating bingo balls
+const BingoBall = ({ number }: { number: number }) => (
+  <div
+    className="absolute rounded-full w-6 h-6 bg-emerald-400 text-black flex items-center justify-center font-bold animate-bounce"
+    style={{
+      left: `${Math.random() * 90}%`,
+      top: `${Math.random() * 90}%`,
+      animationDuration: `${2 + Math.random() * 2}s`,
+    }}
+  >
+    {number}
+  </div>
+);
+
 const DashboardHeader = ({
+  L,
   gameNo,
   derash,
   players,
@@ -55,6 +72,7 @@ const DashboardHeader = ({
   muted,
   toggleMute,
 }: {
+  L: any;
   gameNo: string;
   derash: number;
   players: number;
@@ -63,10 +81,10 @@ const DashboardHeader = ({
   toggleMute: () => void;
 }) => (
   <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-2">
-    <HeaderStat label="Game No" value={gameNo} />
-    <HeaderStat label="Derash" value={derash} />
-    <HeaderStat label="Player" value={players} />
-    <HeaderStat label="Called" value={called} />
+    <HeaderStat label={L.gameNo} value={gameNo} />
+    <HeaderStat label={L.derash} value={derash} />
+    <HeaderStat label={L.players} value={players} />
+    <HeaderStat label={L.called} value={called} />
     <button
       onClick={toggleMute}
       className="h-9 w-9 flex items-center justify-center rounded-full bg-zinc-800 hover:bg-zinc-700 transition"
@@ -119,7 +137,14 @@ const DashboardHome = () => {
     "info" | "error" | "success"
   >("info");
 
+  const [stakesCountdown, setStakesCountdown] = useState<
+    Record<number, number>
+  >({});
+
   const audioRef = React.useRef<HTMLAudioElement | null>(null);
+
+  const { lang, setLang } = useLang();
+  const L = t(lang);
 
   const playNumberAudio = (num: number) => {
     if (muted || !audioUnlockedRef.current) return;
@@ -129,6 +154,13 @@ const DashboardHome = () => {
     audio.volume = 1;
 
     audio.play().catch(() => {});
+  };
+
+  const playBingoSound = () => {
+    if (!audioUnlockedRef.current) return; // only if user has unlocked audio
+    const audio = new Audio("/web/audio/bingo.mp3");
+    audio.volume = 1;
+    audio.play().catch(() => {}); // ignore play errors
   };
 
   const [stakesStatus, setStakesStatus] = useState<Record<
@@ -145,13 +177,64 @@ const DashboardHome = () => {
   const token = localStorage.getItem("token");
 
   useEffect(() => {
-    const interval = setInterval(() => {
-      fetch("/bingo/status")
-        .then((res) => res.json())
-        .then((data) => setStakesStatus(data));
-    }, 3000);
-    return () => clearInterval(interval);
-  }, []);
+    let interval: number;
+
+    const fetchStakesStatus = async () => {
+      try {
+        const res = await fetch("/bingo/status");
+        const data: Record<
+          number,
+          {
+            reservation_active: boolean;
+            seconds_left: number;
+            players: number;
+            derash: number;
+            game_no: number;
+          }
+        > = await res.json();
+
+        // Update both stakesStatus and initialize stakesCountdown if missing
+        setStakesStatus(data);
+
+        setStakesCountdown((prev) => {
+          const next: Record<number, number> = { ...prev };
+          for (const stakeStr in data) {
+            const stake = Number(stakeStr);
+            if (!(stake in prev) || data[stake].reservation_active) {
+              next[stake] = data[stake].seconds_left;
+            }
+          }
+          return next;
+        });
+      } catch (err) {
+        console.error("Failed to fetch /bingo/status", err);
+      }
+    };
+
+    fetchStakesStatus();
+
+    // Start interval to count down per-stake every second
+    interval = window.setInterval(() => {
+      setStakesCountdown((prev) => {
+        const next: Record<number, number> = { ...prev };
+        for (const stake in next) {
+          // Only decrement if reservation is active
+          if (stakesStatus?.[stake]?.reservation_active && next[stake] > 0) {
+            next[stake] = next[stake] - 1;
+          }
+        }
+        return next;
+      });
+    }, 1000);
+
+    // Refresh status from backend every 3 seconds
+    const refreshInterval = window.setInterval(fetchStakesStatus, 3000);
+
+    return () => {
+      clearInterval(interval);
+      clearInterval(refreshInterval);
+    };
+  }, [stakesStatus]);
 
   // ------------------ Update stake if URL changes ------------------
   useEffect(() => {
@@ -279,6 +362,12 @@ const DashboardHome = () => {
 
       case "number_reserved":
         setReservedNumbers(msg.reserved_numbers ?? []);
+
+        // 🔹 Restart countdown if reservation is active
+        if (reservationActive) {
+          setSecondsLeft((prev) => Math.max(prev, 1)); // keep the remaining seconds
+        }
+
         if (msg.user_id === wsId) {
           if (msg.selected_number == null) {
             setSelectedNumber(null);
@@ -296,7 +385,8 @@ const DashboardHome = () => {
         break;
 
       case "winner_announcement":
-        setAnnouncement(`🎉 Player won Bingo!`);
+        setAnnouncement(`🎉 ${L.playerWon}`);
+        playBingoSound();
         break;
 
       case "winner":
@@ -318,7 +408,7 @@ const DashboardHome = () => {
 
       case "no_players":
       case "new_round":
-        resetGameState("New round started", "info");
+        resetGameState(L.newRound, "info");
         break;
 
       case "error":
@@ -327,14 +417,11 @@ const DashboardHome = () => {
         break;
 
       case "refund":
-        resetGameState(msg.message ?? "Game canceled. Stake refunded.", "info");
+        resetGameState(L.refund, "info");
         break;
 
       case "round_cancelled":
-        resetGameState(
-          msg.message ?? "Round cancelled — not enough players",
-          "error",
-        );
+        resetGameState(L.roundCancelled, "error");
         break;
     }
 
@@ -365,56 +452,133 @@ const DashboardHome = () => {
 
   // ------------------ Render ------------------
   if (!stake) {
-    // Show lobby only if no stake
+    // Lobby view when no stake selected
     return (
       <PhoneContainer>
-        <div className="p-4 text-white">
-          <h1 className="text-xl font-bold text-center mb-4">
-            🎯 Select Stake
+        {/* Floating Bingo Balls Background */}
+        <div className="absolute inset-0 overflow-hidden pointer-events-none">
+          {Array.from({ length: 15 }, (_, i) => (
+            <BingoBall key={i} number={Math.floor(Math.random() * 75) + 1} />
+          ))}
+        </div>
+
+        <div className="relative z-10 p-4 text-white">
+          {/* Language switch */}
+          <div className="flex justify-end mb-2">
+            <button
+              onClick={() => setLang(lang === "am" ? "en" : "am")}
+              className="text-xs bg-zinc-800 px-3 py-1 rounded hover:bg-zinc-700 transition"
+            >
+              {lang === "am" ? "English" : "አማርኛ"}
+            </button>
+          </div>
+
+          {/* Title */}
+          <h1 className="text-2xl font-bold text-center mb-6 animate-pulse">
+            🎯 {L.selectStake}
           </h1>
-          <table className="w-full text-center border border-zinc-700 rounded-lg overflow-hidden">
-            <thead className="bg-zinc-800 text-sm">
-              <tr>
-                <th className="p-2">Stake</th>
-                <th className="p-2">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {AVAILABLE_STAKES.map((s) => {
-                const status = stakesStatus?.[s];
-                return (
-                  <tr key={s} className="border-t border-zinc-700">
-                    <td className="p-3 font-bold text-emerald-400">{s} Birr</td>
-                    <td>
-                      {status ? (
-                        <div className="flex flex-col gap-1 text-xs text-white">
-                          <span>
-                            Status:{" "}
-                            {status.reservation_active
-                              ? "Countdown"
-                              : "Playing"}
-                          </span>
-                          <span>Players: {status.players}</span>
-                          <span>Derash: {status.derash} Birr</span>
-                          <span>Game #: {status.game_no}</span>
-                        </div>
+
+          {/* Stakes grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {AVAILABLE_STAKES.map((s) => {
+              const status = stakesStatus?.[s];
+              const secondsLeft = stakesCountdown[s] ?? 60;
+              const totalSeconds = 60;
+
+              const progressWidth = status?.reservation_active
+                ? `${(secondsLeft / totalSeconds) * 100}%`
+                : "100%";
+
+              return (
+                <div
+                  key={s}
+                  className={`relative bg-zinc-800 rounded-xl p-5 shadow-lg transform transition hover:scale-105 hover:shadow-2xl cursor-pointer border-2 ${
+                    !status
+                      ? "border-zinc-600"
+                      : status.reservation_active
+                        ? "border-yellow-400"
+                        : "border-emerald-400"
+                  }`}
+                  onClick={() => joinStake(s)}
+                >
+                  {/* Stake and Countdown */}
+                  <div className="flex justify-between items-center mb-2">
+                    <span className="text-lg font-bold text-emerald-400">
+                      {s} Birr
+                    </span>
+                    {status ? (
+                      status.reservation_active ? (
+                        <span className="text-yellow-400 text-sm font-bold animate-pulse">
+                          🔥 {L.countdown} {secondsLeft}s
+                        </span>
                       ) : (
-                        <span className="text-gray-400">Loading...</span>
-                      )}
-                    </td>
-                    <td>
-                      <button
-                        className="bg-emerald-500 px-4 py-1 rounded font-bold hover:bg-emerald-600"
-                        onClick={() => joinStake(s)}
-                      >
-                        Join
-                      </button>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                        <span className="text-emerald-400 text-sm font-bold">
+                          {L.playing}
+                        </span>
+                      )
+                    ) : (
+                      <span className="text-gray-400 text-sm">{L.loading}</span>
+                    )}
+                  </div>
+
+                  {/* Countdown Progress Bar */}
+                  {status?.reservation_active && (
+                    <div className="w-full h-2 bg-zinc-700 rounded-full mb-3">
+                      <div
+                        className="h-2 bg-yellow-400 rounded-full transition-all"
+                        style={{ width: progressWidth }}
+                      />
+                    </div>
+                  )}
+
+                  {/* Players Joining Indicator */}
+                  <div className="flex items-center gap-1 mb-2">
+                    {Array.from({ length: status?.players ?? 0 }).map(
+                      (_, i) => (
+                        <div
+                          key={i}
+                          className="w-3 h-3 rounded-full bg-blue-400 animate-bounce"
+                          style={{ animationDelay: `${Math.random() * 0.5}s` }}
+                        />
+                      ),
+                    )}
+                    <span className="text-xs text-white ml-2">
+                      {status?.players ?? 0} {L.players}
+                    </span>
+                  </div>
+
+                  {/* Other info */}
+                  {status ? (
+                    <div className="flex flex-col gap-1 text-xs text-white">
+                      <span>
+                        {L.derash}: {status.derash} Birr
+                      </span>
+                      <span>
+                        {L.gameNo}: {status.game_no}
+                      </span>
+                      <span>
+                        Status:{" "}
+                        {status.reservation_active ? L.waiting : L.playing}
+                      </span>
+                    </div>
+                  ) : (
+                    <span className="text-gray-400">Loading...</span>
+                  )}
+
+                  {/* Join Button */}
+                  <button
+                    className={`mt-4 w-full py-2 rounded font-bold transition ${
+                      status?.reservation_active
+                        ? "bg-yellow-400 hover:bg-yellow-500 text-black"
+                        : "bg-emerald-500 hover:bg-emerald-600 text-white"
+                    }`}
+                  >
+                    {L.join}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </PhoneContainer>
     );
@@ -436,13 +600,12 @@ const DashboardHome = () => {
       )}
       <div className="p-3 space-y-4 h-full overflow-y-auto">
         {!wsReady && (
-          <p className="text-center text-white mt-10">
-            Connecting to game server...
-          </p>
+          <p className="text-center text-white mt-10">{L.connecting}</p>
         )}
 
         <DashboardHeader
           gameNo={gameNo}
+          L={L}
           derash={derash}
           players={players}
           called={calledNumbers.length}
@@ -478,10 +641,10 @@ const DashboardHome = () => {
 
         <h1 className="text-center text-lg font-bold text-emerald-400">
           {reservationActive
-            ? "Select Your Number"
+            ? L.selectNumber
             : playboard.length > 0
-              ? "BINGO DRAW"
-              : "Game is already started"}
+              ? L.bingoDraw
+              : L.gameStarted}
         </h1>
 
         <div className="grid grid-cols-12 gap-3">
@@ -519,7 +682,7 @@ const DashboardHome = () => {
                   onChange={(e) => setAutoClick(e.target.checked)}
                   className="w-4 h-4 accent-emerald-400 rounded"
                 />
-                Auto-Click Numbers
+                {L.autoClick}
               </label>
             </div>
             {playboard.length > 0 && !autoClick && (
@@ -556,8 +719,8 @@ const DashboardHome = () => {
           <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
             <div className="bg-black bg-opacity-70 px-6 py-4 rounded-xl text-center pointer-events-auto">
               <p className="text-yellow-400 font-extrabold text-2xl">
-                🎉 Bingo Winner: Number {winningNumber}
-                {wsId && winnerIds.includes(wsId) && " (YOU)"}
+                🎉 {L.winner}: Number {winningNumber}
+                {wsId && winnerIds.includes(wsId) && ` (${L.you})`}
               </p>
             </div>
           </div>
@@ -565,15 +728,17 @@ const DashboardHome = () => {
 
         <p className="text-center text-sm text-gray-400">
           {reservationActive
-            ? `Select your number (${secondsLeft}s left)`
-            : `Next call in ${secondsLeft}s`}
+            ? L.selectYourNumber(secondsLeft)
+            : L.nextCall(secondsLeft)}
         </p>
       </div>
 
       {errorMessage && (
         <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
           <div className="bg-red-600 bg-opacity-90 text-white px-6 py-4 rounded-xl text-center shadow-lg pointer-events-auto animate-fade-in">
-            <p className="font-bold text-lg">⚠️ {errorMessage}</p>
+            <p className="font-bold text-lg">
+              ⚠️ {L.alert}: {errorMessage}
+            </p>
           </div>
         </div>
       )}

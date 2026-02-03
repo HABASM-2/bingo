@@ -1,8 +1,5 @@
 // src/config/api.ts
-
-// Put your LAN IP or localhost here
-// export const API_URL = "http://10.55.29.239:8000";
-export const API_URL = "https://coraline-fabaceous-ungutturally.ngrok-free.dev";
+export const API_URL = import.meta.env.VITE_API_URL;
 
 export const getBingoWsUrl = (token?: string, stake: number = 20) => {
   const wsBase = API_URL.startsWith("https")
