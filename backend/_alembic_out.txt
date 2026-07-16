@@ -1,0 +1,24 @@
+﻿python : C:\Users\hman\AppData\Local\Programs\Python\Python313\python.exe: No module named alembic.__main__; 'alembic' 
+is a package and cannot be directly executed
+At C:\Users\hman\AppData\Local\Temp\ps-script-6e29e938-df13-4d33-8144-fb9ce7bba405.ps1:105 char:51
++ ... rs\hman\Desktop\games\backend; python -m alembic current 2>&1 | Out-F ...
++                                    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\Users\hman\A...rectly executed:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+python : C:\Users\hman\AppData\Local\Programs\Python\Python313\python.exe: No module named alembic.__main__; 'alembic' 
+is a package and cannot be directly executed
+At C:\Users\hman\AppData\Local\Temp\ps-script-6e29e938-df13-4d33-8144-fb9ce7bba405.ps1:105 char:172
++ ... _alembic_out.txt -Encoding utf8; python -m alembic heads 2>&1 | Out-F ...
++                                      ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\Users\hman\A...rectly executed:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+python : C:\Users\hman\AppData\Local\Programs\Python\Python313\python.exe: No module named alembic.__main__; 'alembic' 
+is a package and cannot be directly executed
+At C:\Users\hman\AppData\Local\Temp\ps-script-6e29e938-df13-4d33-8144-fb9ce7bba405.ps1:105 char:299
++ ... t -Append -Encoding utf8; python -m alembic upgrade head 2>&1 | Out-F ...
++                               ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (C:\Users\hman\A...rectly executed:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 

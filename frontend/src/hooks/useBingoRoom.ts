@@ -11,6 +11,8 @@ import type {
 
 interface UseBingoRoomResult {
   connectionStatus: WebSocketStatus;
+  reconnectAttempt: number;
+  latencyMs: number | null;
   roomState: RoomStateMessage | null;
   playerCount: number;
   currentBall: number | null;
@@ -149,7 +151,10 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
     [flashToast, syncCountdown],
   );
 
-  const { status, send } = useWebSocket<BingoServerMessage, BingoClientMessage>({
+  const { status, send, reconnectAttempt, latencyMs } = useWebSocket<
+    BingoServerMessage,
+    BingoClientMessage
+  >({
     url,
     onMessage: handleMessage,
   });
@@ -274,6 +279,8 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
 
   return {
     connectionStatus: status,
+    reconnectAttempt,
+    latencyMs,
     roomState,
     playerCount,
     currentBall,

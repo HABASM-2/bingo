@@ -1,12 +1,17 @@
 import api from "../api/client";
-import type { GameHistoryEntry, RoomSummary } from "../types/bingo";
+import type { GameHistoryPage, RoomSummary } from "../types/bingo";
 
 const ROOM_NAME = "Ethiopian Bingo";
 
-export async function getBingoHistory(): Promise<GameHistoryEntry[]> {
-  const response = await api.get("/bingo/history");
+export async function getBingoHistory(
+  limit = 10,
+  offset = 0,
+): Promise<GameHistoryPage> {
+  const response = await api.get("/bingo/history", {
+    params: { limit, offset },
+  });
 
-  return response.data.games;
+  return response.data;
 }
 
 export async function listRooms(): Promise<RoomSummary[]> {

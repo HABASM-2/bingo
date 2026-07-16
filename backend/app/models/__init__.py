@@ -3,6 +3,8 @@ from app.models.wallet_transaction import WalletTransaction, Deposit
 from app.models.sms_transaction import SMSTransaction, ReferralReward
 from app.models.request_tr import DepositRequest, WithdrawRequest, TransferRequest
 from app.models.bingo_game import BingoGame, BingoGameResult
+from app.models.dama_game import DamaGame, DamaGameResult
+from app.models.aviator_game import AviatorRound, AviatorBet
 
 __all__ = [
     "User",
@@ -15,4 +17,8 @@ __all__ = [
     "Deposit",
     "BingoGame",
     "BingoGameResult",
+    "DamaGame",
+    "DamaGameResult",
+    "AviatorRound",
+    "AviatorBet",
 ]

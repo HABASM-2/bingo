@@ -12,6 +12,20 @@ import { ActiveGameView } from "./ActiveGameView";
 import { SpectatorView } from "./SpectatorView";
 import { WinnerOverlay } from "./WinnerOverlay";
 import { ProfileHub } from "./ProfileHub";
+import { HomeView } from "./HomeView";
+import { NetworkAlert } from "./NetworkAlert";
+import { DamaGame } from "../dama/DamaGame";
+import { AviatorGame } from "../aviator/AviatorGame";
+import {
+  BINGO_AUDIO_SRC,
+  NEW_GAME_AUDIO_SRC,
+  enableGameAudio,
+  numberAudioSrc,
+  playGameAudio,
+  preloadEventSounds,
+  stopGameAudio,
+} from "../../utils/gameAudio";
+import type { RoomStatus } from "../../types/bingo";
 
 interface BingoGameProps {
   userId: string;
@@ -34,29 +48,6 @@ const WINNER_OVERLAY_SECONDS = 5;
 /** Let players see the last call + glowing win line before the dialog. */
 const WIN_HOLD_MS = 1500;
 
-function playBeep() {
-  try {
-    const Ctx =
-      window.AudioContext ||
-      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!Ctx) return;
-
-    const ctx = new Ctx();
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.frequency.value = 660;
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    gain.gain.setValueAtTime(0.15, ctx.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.25);
-    osc.start();
-    osc.stop(ctx.currentTime + 0.25);
-    osc.onended = () => ctx.close();
-  } catch {
-    // Audio is best-effort.
-  }
-}
-
 export default function BingoGame({
   userId,
   firstName,
@@ -66,8 +57,10 @@ export default function BingoGame({
 }: BingoGameProps) {
   const [roomId, setRoomId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [tab, setTab] = useState<NavTab>("bingo");
+  const [tab, setTab] = useState<NavTab>("home");
   const [soundOn, setSoundOn] = useState(true);
+  const [audioBlocked, setAudioBlocked] = useState(false);
+  const [audioRetryToken, setAudioRetryToken] = useState(0);
   const [autoOn, setAutoOn] = useState(true);
   const [showWinnerDialog, setShowWinnerDialog] = useState(false);
 
@@ -76,7 +69,20 @@ export default function BingoGame({
   // never overwrite the wallet (it historically showed shared/stale numbers).
   const [walletBalance, setWalletBalance] = useState<string | null>(authBalance ?? null);
 
-  const lastBeepBall = useRef<number | null>(null);
+  const lastSpokenBall = useRef<number | null>(null);
+  const previousRoomStatus = useRef<RoomStatus | null>(null);
+
+  useEffect(() => {
+    const removeAudioUnlock = preloadEventSounds(() => {
+      setAudioBlocked(false);
+      setAudioRetryToken((value) => value + 1);
+    });
+
+    return () => {
+      removeAudioUnlock();
+      stopGameAudio();
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -119,6 +125,8 @@ export default function BingoGame({
 
   const {
     connectionStatus,
+    reconnectAttempt,
+    latencyMs,
     roomState,
     currentBall,
     drawn,
@@ -140,12 +148,86 @@ export default function BingoGame({
     }
   }, [roomState?.status, gameOver, refreshWalletFromAuth]);
 
+  const onBingoTab = tab === "bingo";
+  const wasOnBingoTab = useRef(onBingoTab);
+
+  // Silence bingo audio when leaving the Bingo tab, but keep soundOn so
+  // returning restores the previous preference without replaying missed calls.
   useEffect(() => {
-    if (soundOn && currentBall !== null && currentBall !== lastBeepBall.current) {
-      lastBeepBall.current = currentBall;
-      playBeep();
+    const justEnteredBingo = onBingoTab && !wasOnBingoTab.current;
+
+    if (!onBingoTab) {
+      stopGameAudio();
+    } else if (justEnteredBingo && currentBall !== null) {
+      lastSpokenBall.current = currentBall;
     }
-  }, [currentBall, soundOn]);
+
+    wasOnBingoTab.current = onBingoTab;
+  }, [onBingoTab, currentBall]);
+
+  // Speak each called number only while the Bingo tab is visible.
+  useEffect(() => {
+    if (
+      onBingoTab &&
+      soundOn &&
+      roomState?.status === "in_progress" &&
+      currentBall !== null &&
+      currentBall !== lastSpokenBall.current
+    ) {
+      const ball = currentBall;
+      void playGameAudio(numberAudioSrc(ball)).then((played) => {
+        if (played) {
+          lastSpokenBall.current = ball;
+          setAudioBlocked(false);
+        } else {
+          setAudioBlocked(true);
+        }
+      });
+    }
+  }, [audioRetryToken, currentBall, onBingoTab, roomState?.status, soundOn]);
+
+  // Play the round-start beat only on the real lobby -> game transition.
+  // Also jump onto the Bingo tab so the live round overlays the interface.
+  useEffect(() => {
+    const nextStatus = roomState?.status ?? null;
+    const previousStatus = previousRoomStatus.current;
+
+    if (previousStatus === "lobby" && nextStatus === "in_progress") {
+      setTab("bingo");
+      if (soundOn) void playGameAudio(NEW_GAME_AUDIO_SRC);
+    }
+
+    if (nextStatus === "lobby") {
+      lastSpokenBall.current = null;
+    }
+
+    previousRoomStatus.current = nextStatus;
+  }, [roomState?.status, soundOn]);
+
+  useEffect(() => {
+    if (!onBingoTab || !soundOn) stopGameAudio();
+  }, [onBingoTab, soundOn]);
+
+  const handleToggleSound = useCallback(() => {
+    if (soundOn) {
+      setSoundOn(false);
+      setAudioBlocked(false);
+      return;
+    }
+
+    lastSpokenBall.current = null;
+    setSoundOn(true);
+    setAudioRetryToken((value) => value + 1);
+  }, [soundOn]);
+
+  const handleEnableAudio = useCallback(() => {
+    void enableGameAudio().then((enabled) => {
+      setAudioBlocked(!enabled);
+      if (enabled && currentBall !== null) {
+        lastSpokenBall.current = currentBall;
+      }
+    });
+  }, [currentBall]);
 
   // Hold the winning line / last call on screen briefly, then open the dialog.
   useEffect(() => {
@@ -159,6 +241,13 @@ export default function BingoGame({
 
     return () => clearTimeout(timer);
   }, [gameOver]);
+
+  // Winner sound only while Bingo is the active tab.
+  useEffect(() => {
+    if (onBingoTab && soundOn && showWinnerDialog && gameOver) {
+      void playGameAudio(BINGO_AUDIO_SRC);
+    }
+  }, [gameOver, onBingoTab, showWinnerDialog, soundOn]);
 
   const handleToggleBoard = useCallback(
     (boardId: number) => {
@@ -243,36 +332,63 @@ export default function BingoGame({
 
   return (
     <Shell onExit={onExit} live={connectionStatus === "open"}>
-      {inGame ? (
-        isPlayer ? (
-          <ActiveGameView
-            room={roomState}
-            drawn={drawn}
-            currentBall={currentBall}
-            cards={playCards}
-            soundOn={soundOn}
-            autoOn={autoOn}
-            onToggleSound={() => setSoundOn((v) => !v)}
-            onToggleAuto={() => setAutoOn((v) => !v)}
-            onClaim={claimBingo}
-            onRefresh={() => window.location.reload()}
-            winHold={winHold}
-            winners={winnersList}
+      {onBingoTab && (
+        <NetworkAlert
+          connectionStatus={connectionStatus}
+          reconnectAttempt={reconnectAttempt}
+          latencyMs={latencyMs}
+        />
+      )}
+
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+        {tab === "home" && (
+          <HomeView
+            firstName={firstName}
+            balance={walletBalance ?? WALLET_LOADING_PLACEHOLDER}
+            bingoPlayers={
+              inGame
+                ? roomState.players_in_round
+                : (roomState.player_count ?? roomState.players_in_round)
+            }
+            bingoLive={inGame}
+            bingoSecondsLeft={secondsLeft}
+            onOpenGame={(game) => setTab(game)}
           />
-        ) : (
-          <SpectatorView
-            room={roomState}
-            drawn={drawn}
-            currentBall={currentBall}
-            soundOn={soundOn}
-            onToggleSound={() => setSoundOn((v) => !v)}
-            winHold={winHold}
-          />
-        )
-      ) : (
-        <>
-          <div className="flex-1 overflow-y-auto">
-            {tab === "bingo" && (
+        )}
+
+        {tab === "bingo" &&
+          (inGame ? (
+            isPlayer ? (
+              <ActiveGameView
+                room={roomState}
+                drawn={drawn}
+                currentBall={currentBall}
+                cards={playCards}
+                soundOn={soundOn}
+                audioBlocked={audioBlocked}
+                autoOn={autoOn}
+                onToggleSound={handleToggleSound}
+                onEnableAudio={handleEnableAudio}
+                onToggleAuto={() => setAutoOn((v) => !v)}
+                onClaim={claimBingo}
+                onRefresh={() => window.location.reload()}
+                winHold={winHold}
+                winners={winnersList}
+              />
+            ) : (
+              <SpectatorView
+                room={roomState}
+                drawn={drawn}
+                currentBall={currentBall}
+                soundOn={soundOn}
+                audioBlocked={audioBlocked}
+                onToggleSound={handleToggleSound}
+                onEnableAudio={handleEnableAudio}
+                winHold={winHold}
+              />
+            )
+          ) : (
+            <div className="flex-1 overflow-y-auto">
               <LobbyView
                 secondsLeft={secondsLeft}
                 balance={walletBalance ?? WALLET_LOADING_PLACEHOLDER}
@@ -284,22 +400,57 @@ export default function BingoGame({
                 onToggleBoard={handleToggleBoard}
                 onDeselectAll={deselectAll}
               />
-            )}
+            </div>
+          ))}
 
-            {tab === "profile" && (
-              <ProfileHub
-                firstName={firstName}
-                balance={walletBalance}
-                boardPrice={roomState.board_price}
-              />
-            )}
+        <div
+          className={
+            tab === "dama"
+              ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+              : "hidden"
+          }
+        >
+          <DamaGame
+            accessToken={accessToken}
+            userId={userId}
+            firstName={firstName}
+            walletBalance={walletBalance}
+            onBalanceChange={setWalletBalance}
+            isActive={tab === "dama"}
+          />
+        </div>
+
+        <div
+          className={
+            tab === "aviator"
+              ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+              : "hidden"
+          }
+        >
+          <AviatorGame
+            accessToken={accessToken}
+            userId={userId}
+            firstName={firstName}
+            walletBalance={walletBalance}
+            onBalanceChange={setWalletBalance}
+            isActive={tab === "aviator"}
+          />
+        </div>
+
+        {tab === "profile" && (
+          <div className="flex-1 overflow-y-auto">
+            <ProfileHub
+              firstName={firstName}
+              balance={walletBalance}
+              boardPrice={roomState.board_price}
+            />
           </div>
+        )}
+      </div>
 
-          <BottomNav active={tab} onChange={setTab} />
-        </>
-      )}
+      <BottomNav active={tab} onChange={setTab} bingoLive={inGame} />
 
-      {showWinnerDialog && gameOver && (
+      {onBingoTab && showWinnerDialog && gameOver && (
         <WinnerOverlay
           winners={winnersList}
           winnerName={gameOver.winner_name ?? null}
@@ -311,8 +462,8 @@ export default function BingoGame({
         />
       )}
 
-      {toast && (
-        <div className="fixed bottom-24 left-1/2 z-40 w-[88%] max-w-sm -translate-x-1/2 rounded-2xl bg-[#4C1D95] px-5 py-3 text-center text-sm font-semibold text-white shadow-2xl">
+      {onBingoTab && toast && (
+        <div className="fixed bottom-28 left-1/2 z-40 w-[88%] max-w-sm -translate-x-1/2 rounded-2xl bg-[#4C1D95] px-5 py-3 text-center text-sm font-semibold text-white shadow-2xl">
           {toast}
         </div>
       )}

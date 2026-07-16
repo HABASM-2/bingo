@@ -16,6 +16,9 @@ from app.bingo import game_loop, redis_store, service
 from app.bingo.manager import manager as bingo_manager
 from app.bingo.pubsub import PubSubListener
 from app.bingo.ws import router as bingo_ws_router
+from app.dama.ws import router as dama_ws_router
+from app.aviator.ws import router as aviator_ws_router
+from app.aviator.game_loop import ensure_game_loop, stop_game_loop as stop_aviator_loop
 
 bingo_pubsub_listener = PubSubListener(service.dispatch_pubsub_event)
 
@@ -29,12 +32,14 @@ async def lifespan(app: FastAPI):
     bingo_manager.bind_pubsub(bingo_pubsub_listener)
     bingo_manager.bind_dispatch(service.dispatch_pubsub_event)
     await bingo_pubsub_listener.start()
+    ensure_game_loop()
 
     yield
 
     # shutdown
     await stop_bot()
 
+    await stop_aviator_loop()
     await game_loop.stop_all()
     await bingo_pubsub_listener.stop()
     await redis_store.close_redis()
@@ -48,16 +53,30 @@ app = FastAPI(
 
 app.include_router(api_router)
 app.include_router(bingo_ws_router)
+app.include_router(dama_ws_router)
+app.include_router(aviator_ws_router)
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 FRONTEND_DIST = BASE_DIR / "frontend" / "dist"
+FRONTEND_AUDIO = FRONTEND_DIST / "audios"
 
 if (FRONTEND_DIST / "assets").exists():
     app.mount(
         "/assets",
         StaticFiles(directory=FRONTEND_DIST / "assets"),
         name="assets",
+    )
+
+# Audio must be mounted before the SPA fallback. Without this route,
+# ``/audios/16.mp3`` was answered with index.html by the catch-all handler.
+# Starlette's StaticFiles also handles byte-range requests correctly, so
+# browsers receive a real ``audio/mpeg`` 206 response while streaming.
+if FRONTEND_AUDIO.exists():
+    app.mount(
+        "/audios",
+        StaticFiles(directory=FRONTEND_AUDIO),
+        name="audios",
     )
 
 
@@ -69,6 +88,15 @@ async def health():
 @app.get("/{path:path}")
 async def frontend(path: str):
     index = FRONTEND_DIST / "index.html"
+    requested_file = (FRONTEND_DIST / path).resolve()
+
+    # Serve other Vite public files (favicon, manifest, etc.) directly while
+    # preventing path traversal outside the built frontend directory.
+    if (
+        requested_file.is_relative_to(FRONTEND_DIST.resolve())
+        and requested_file.is_file()
+    ):
+        return FileResponse(requested_file)
 
     if index.exists():
         return FileResponse(index)

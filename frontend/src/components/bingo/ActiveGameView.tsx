@@ -1,6 +1,6 @@
 import type { BingoCard, RoomStateMessage, WinnerInfo } from "../../types/bingo";
 import { CalledColumns } from "./CalledColumns";
-import { CurrentCall } from "./CurrentCall";
+import { CallControls, CurrentCall } from "./CurrentCall";
 import { Cartela } from "./Cartela";
 
 interface ActiveGameViewProps {
@@ -9,8 +9,10 @@ interface ActiveGameViewProps {
   currentBall: number | null;
   cards: BingoCard[];
   soundOn: boolean;
+  audioBlocked?: boolean;
   autoOn: boolean;
   onToggleSound: () => void;
+  onEnableAudio?: () => void;
   onToggleAuto: () => void;
   onClaim: (cardId: string) => void;
   onRefresh: () => void;
@@ -37,8 +39,10 @@ export function ActiveGameView({
   currentBall,
   cards,
   soundOn,
+  audioBlocked = false,
   autoOn,
   onToggleSound,
+  onEnableAudio,
   onToggleAuto,
   onClaim,
   onRefresh,
@@ -64,21 +68,20 @@ export function ActiveGameView({
       </div>
 
       <div className="flex min-h-0 flex-1 gap-1.5 overflow-hidden px-1.5 pb-1.5">
-        {/* Wider column so 1–75 holders can grow */}
-        <div className="w-[46%] shrink-0 overflow-y-auto">
-          <CalledColumns drawn={drawn} currentBall={currentBall} />
-        </div>
-
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-1 overflow-y-auto">
+        {/* Left: all call information and controls, stacked vertically. */}
+        <div className="flex min-w-0 flex-1 basis-0 flex-col gap-1.5 overflow-y-auto rounded-2xl bg-white/35 p-1 dark:bg-white/[0.03]">
           <CurrentCall
             currentBall={currentBall}
             drawn={drawn}
             soundOn={soundOn}
+            audioBlocked={audioBlocked}
             autoOn={autoOn}
             onToggleSound={onToggleSound}
+            onEnableAudio={onEnableAudio}
             onToggleAuto={onToggleAuto}
             onRefresh={onRefresh}
             compact
+            showControls={false}
             emphasizeCall={winHold}
           />
 
@@ -88,7 +91,23 @@ export function ActiveGameView({
             </p>
           )}
 
-          {/* Vertical stack; width-capped so aspect-square cells stay short */}
+          {/* The complete B-I-N-G-O 1–75 holder sits below the controls. */}
+          <CalledColumns drawn={drawn} currentBall={currentBall} />
+        </div>
+
+        {/* Right: cartelas only, with the full remaining width. */}
+        <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col gap-1 overflow-y-auto rounded-2xl bg-gradient-to-b from-purple-100/60 to-transparent p-1 dark:from-white/[0.06]">
+          <CallControls
+            soundOn={soundOn}
+            audioBlocked={audioBlocked}
+            autoOn={autoOn}
+            onToggleSound={onToggleSound}
+            onEnableAudio={onEnableAudio}
+            onToggleAuto={onToggleAuto}
+            onRefresh={onRefresh}
+            compact
+          />
+
           <div className="flex w-full min-w-0 flex-col items-center gap-1.5">
             {cards.map((card) => {
               const boardId = Number(card.card_id);
@@ -97,7 +116,7 @@ export function ActiveGameView({
               return (
                 <div
                   key={card.card_id}
-                  className={`flex w-full max-w-[188px] flex-col gap-0.5 rounded-lg bg-white/90 p-1 shadow-sm ring-1 ring-purple-100/80 dark:bg-[#1E1B2E] dark:ring-white/10 ${
+                  className={`flex w-full max-w-[180px] flex-col gap-0.5 rounded-xl bg-white/95 p-1 shadow-md ring-1 ring-purple-100/80 dark:bg-[#1E1B2E] dark:ring-white/10 ${
                     winPattern ? "ring-2 ring-yellow-400" : ""
                   }`}
                 >

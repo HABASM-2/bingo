@@ -18,6 +18,11 @@ class Settings(BaseSettings):
 
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_BOT_USERNAME: str = ""
+    # Keep enabled by default. Only set false for emergency local debugging.
+    TELEGRAM_BOT_ENABLED: bool = True
+    # Optional HTTP(S)/SOCKS proxy when api.telegram.org is blocked.
+    # Example: socks5://127.0.0.1:1080
+    TELEGRAM_PROXY_URL: str = ""
 
     TELEGRAM_WEBAPP_URL: str = ""
 

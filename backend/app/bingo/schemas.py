@@ -61,16 +61,23 @@ class GameHistoryEntry(BaseModel):
     total_boards: int
     total_players: int
     derash: str
+    system_fee: str = "0"
+    prize_pool: str = "0"
     boards_count: int
     stake: str
     is_winner: bool
     amount_won: str
     winning_pattern: str | None = None
+    winner_count: int = 0
+    winner_names: list[str] = []
     created_at: str | None = None
 
 
 class GameHistoryResponse(BaseModel):
     games: list[GameHistoryEntry]
+    total: int = 0
+    played: int = 0
+    wins: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -191,6 +198,8 @@ class GameOverMessage(BaseModel):
     winning_card_id: str | None = None
     derash: str = "0"
     derash_share: str = "0"
+    system_fee: str = "0"
+    prize_pool: str = "0"
     winners: list[WinnerInfo] = []
     winner_count: int = 0
 

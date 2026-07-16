@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.current_user import get_current_user
 from app.bingo import redis_store, service, wallet
@@ -47,17 +47,26 @@ async def lobby():
 
 
 @router.get("/history", response_model=GameHistoryResponse)
-async def history(user: User = Depends(get_current_user)):
-    """Recent Bingo rounds the authenticated user staked in, newest first.
+async def history(
+    user: User = Depends(get_current_user),
+    limit: int = Query(10, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+):
+    """Paginated Bingo rounds the authenticated user staked in, newest first.
 
     Sourced entirely from Postgres (``bingo_games`` / ``bingo_game_results``)
     so the History tab reflects real, persisted rounds - stakes paid, boards
-    played, and any derash won.
+    played, and any derash won. Only the requested page is loaded.
     """
 
-    games = await asyncio.to_thread(wallet.get_user_history, str(user.id))
+    payload = await asyncio.to_thread(
+        wallet.get_user_history,
+        str(user.id),
+        limit,
+        offset,
+    )
 
-    return {"games": games}
+    return payload
 
 
 @router.get("/rooms", response_model=RoomListResponse)

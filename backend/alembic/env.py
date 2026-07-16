@@ -6,16 +6,25 @@ from sqlalchemy import pool
 from alembic import context
 
 from app.db.database import Base
-
-
-
 from app.core.config import settings
 
-# IMPORTANT: import all models so metadata knows them
-from app.models import (
+# Import the models package so every mapped table is registered on Base.metadata
+# (needed for autogenerate). Prefer the package __init__ exports.
+from app.models import (  # noqa: F401
     User,
     SMSTransaction,
+    ReferralReward,
     DepositRequest,
+    WithdrawRequest,
+    TransferRequest,
+    WalletTransaction,
+    Deposit,
+    BingoGame,
+    BingoGameResult,
+    DamaGame,
+    DamaGameResult,
+    AviatorRound,
+    AviatorBet,
 )
 
 print("TABLES FOUND BY ALEMBIC:")

@@ -7,7 +7,9 @@ interface SpectatorViewProps {
   drawn: number[];
   currentBall: number | null;
   soundOn: boolean;
+  audioBlocked?: boolean;
   onToggleSound: () => void;
+  onEnableAudio?: () => void;
   winHold?: boolean;
 }
 
@@ -33,7 +35,9 @@ export function SpectatorView({
   drawn,
   currentBall,
   soundOn,
+  audioBlocked = false,
   onToggleSound,
+  onEnableAudio,
   winHold = false,
 }: SpectatorViewProps) {
   return (
@@ -55,8 +59,10 @@ export function SpectatorView({
             currentBall={currentBall}
             drawn={drawn}
             soundOn={soundOn}
+            audioBlocked={audioBlocked}
             autoOn={false}
             onToggleSound={onToggleSound}
+            onEnableAudio={onEnableAudio}
             onToggleAuto={() => undefined}
             onRefresh={() => window.location.reload()}
             showAuto={false}

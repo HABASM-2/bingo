@@ -3,8 +3,9 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
-    filters
+    filters,
 )
+from telegram.request import HTTPXRequest
 
 from app.core.config import settings
 from app.bot.handlers import (
@@ -33,11 +34,32 @@ from app.bot.handlers import (
 )
 
 
-def create_bot():
+def create_bot(proxy: str | None = None):
+    resolved_proxy = (proxy or settings.TELEGRAM_PROXY_URL or "").strip() or None
+    # Separate clients for commands vs long-polling so a proxy/timeout
+    # config applies to both paths without sharing one crowded pool.
+    request = HTTPXRequest(
+        connect_timeout=10.0,
+        read_timeout=20.0,
+        write_timeout=20.0,
+        pool_timeout=10.0,
+        proxy=resolved_proxy,
+    )
+    get_updates_request = HTTPXRequest(
+        connect_timeout=10.0,
+        read_timeout=30.0,
+        write_timeout=20.0,
+        pool_timeout=10.0,
+        proxy=resolved_proxy,
+    )
 
-    application = Application.builder()\
-        .token(settings.TELEGRAM_BOT_TOKEN)\
+    application = (
+        Application.builder()
+        .token(settings.TELEGRAM_BOT_TOKEN)
+        .request(request)
+        .get_updates_request(get_updates_request)
         .build()
+    )
 
 
     application.add_handler(

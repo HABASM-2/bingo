@@ -16,6 +16,7 @@ interface UseWebSocketResult<TOutgoing> {
   status: WebSocketStatus;
   send: (message: TOutgoing) => void;
   reconnectAttempt: number;
+  latencyMs: number | null;
 }
 
 /**
@@ -34,6 +35,7 @@ export function useWebSocket<TIncoming = unknown, TOutgoing = unknown>({
 }: UseWebSocketOptions<TIncoming>): UseWebSocketResult<TOutgoing> {
   const [status, setStatus] = useState<WebSocketStatus>("idle");
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
+  const [latencyMs, setLatencyMs] = useState<number | null>(null);
 
   const socketRef = useRef<WebSocket | null>(null);
   const queueRef = useRef<TOutgoing[]>([]);
@@ -42,6 +44,7 @@ export function useWebSocket<TIncoming = unknown, TOutgoing = unknown>({
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const heartbeatTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const attemptRef = useRef(0);
+  const heartbeatSentAtRef = useRef<number | null>(null);
 
   useEffect(() => {
     onMessageRef.current = onMessage;
@@ -110,8 +113,13 @@ export function useWebSocket<TIncoming = unknown, TOutgoing = unknown>({
         flushQueue(socket);
 
         clearHeartbeat();
+        heartbeatSentAtRef.current = Date.now();
+        socket.send(JSON.stringify(heartbeatMessageRef.current));
         heartbeatTimerRef.current = setInterval(() => {
-          send(heartbeatMessageRef.current as TOutgoing);
+          if (socket.readyState === WebSocket.OPEN) {
+            heartbeatSentAtRef.current = Date.now();
+            socket.send(JSON.stringify(heartbeatMessageRef.current));
+          }
         }, heartbeatIntervalMs);
       };
 
@@ -120,6 +128,18 @@ export function useWebSocket<TIncoming = unknown, TOutgoing = unknown>({
 
         try {
           const parsed = JSON.parse(event.data) as TIncoming;
+
+          if (
+            parsed !== null &&
+            typeof parsed === "object" &&
+            "type" in parsed &&
+            (parsed as { type?: unknown }).type === "pong" &&
+            heartbeatSentAtRef.current !== null
+          ) {
+            setLatencyMs(Date.now() - heartbeatSentAtRef.current);
+            heartbeatSentAtRef.current = null;
+          }
+
           onMessageRef.current?.(parsed);
         } catch {
           // Ignore malformed frames rather than crashing the connection.
@@ -132,6 +152,7 @@ export function useWebSocket<TIncoming = unknown, TOutgoing = unknown>({
         if (cancelled) return;
 
         setStatus("closed");
+        setLatencyMs(null);
 
         const attempt = attemptRef.current + 1;
         attemptRef.current = attempt;
@@ -162,7 +183,7 @@ export function useWebSocket<TIncoming = unknown, TOutgoing = unknown>({
       socketRef.current?.close();
       socketRef.current = null;
     };
-  }, [url, flushQueue, send, heartbeatIntervalMs, baseReconnectDelayMs, maxReconnectDelayMs]);
+  }, [url, flushQueue, heartbeatIntervalMs, baseReconnectDelayMs, maxReconnectDelayMs]);
 
-  return { status, send, reconnectAttempt };
+  return { status, send, reconnectAttempt, latencyMs };
 }

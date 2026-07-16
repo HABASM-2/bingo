@@ -42,12 +42,23 @@ export interface GameHistoryEntry {
   total_boards: number;
   total_players: number;
   derash: string;
+  system_fee?: string;
+  prize_pool?: string;
   boards_count: number;
   stake: string;
   is_winner: boolean;
   amount_won: string;
   winning_pattern: string | null;
+  winner_count?: number;
+  winner_names?: string[];
   created_at: string | null;
+}
+
+export interface GameHistoryPage {
+  games: GameHistoryEntry[];
+  total: number;
+  played: number;
+  wins: number;
 }
 
 export interface JoinRoomResponse {

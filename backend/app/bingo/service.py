@@ -11,8 +11,9 @@ The Ethiopian lobby model: players pick up to ``max_boards`` cartela ids
 (1..``BINGO_BOARD_POOL_MAX``) during a shared 40s countdown. When the
 countdown expires the round starts, each selected board is charged
 ``board_price`` ETB, deterministic cartelas are generated, and the ball
-draw begins. The winner takes the whole derash (prize pool); after a short
-winner splash the room resets to a fresh lobby.
+draw begins. After a house cut based on staked-board count (0% for ≤4,
+10% for 5–10, 20% for 11+), winners share the remaining derash equally;
+after a short winner splash the room resets to a fresh lobby.
 """
 
 from __future__ import annotations
@@ -30,6 +31,28 @@ from app.bingo.patterns import DEFAULT_PATTERNS, Pattern
 from app.bingo.redis_store import CardState, PlayerState, RoomState, get_room, room_lock, save_room
 from app.bingo.validator import find_winning_pattern
 from app.core.config import settings
+
+
+def system_fee_rate(player_count: int) -> Decimal:
+    """House cut of the gross derash based on staked boards ("players").
+
+    In this game each board counts as one player, so 3 users with 2 boards
+    each are 6 players → 10% fee.
+    """
+
+    if player_count <= 4:
+        return Decimal("0")
+    if player_count <= 10:
+        return Decimal("0.10")
+    return Decimal("0.20")
+
+
+def apply_system_fee(derash: Decimal, player_count: int) -> tuple[Decimal, Decimal]:
+    """Return ``(prize_pool, system_fee)`` after applying the house cut."""
+
+    rate = system_fee_rate(player_count)
+    fee = (derash * rate).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+    return derash - fee, fee
 
 
 class BingoError(Exception):
@@ -675,12 +698,14 @@ async def _settle_winners(
 
     Every active cartela is checked against ``patterns``. If several boards
     complete on the same drawn ball, every distinct winning *player* shares the
-    derash equally (co-winners split 50/50, 1/3 each, ... — not per-board).
+    net derash equally after the system fee (0% / 10% / 20% by staked-board
+    count — e.g. 3 users × 2 boards = 6 → 10%).
     A single ``game_over`` broadcast carries the full winner-board list.
     """
 
     plan: dict[str, Decimal] = {}
     game_id = ""
+    system_fee = Decimal("0")
     room_snapshot: RoomState | None = None
 
     async with room_lock(room_id):
@@ -713,9 +738,12 @@ async def _settle_winners(
                 winner_user_ids.append(card.user_id)
 
         num_winners = len(winner_user_ids)
-        derash = Decimal(room.derash)
-        share = _split_derash(derash, num_winners)
-        remainder = derash - share * num_winners
+        # Fee tiers count each staked board as one "player".
+        board_players = room.round_players or len(room.cards)
+        gross_derash = Decimal(room.derash)
+        prize_pool, system_fee = apply_system_fee(gross_derash, board_players)
+        share = _split_derash(prize_pool, num_winners)
+        remainder = prize_pool - share * num_winners
 
         for idx, uid in enumerate(winner_user_ids):
             amount = share + (remainder if idx == 0 else Decimal("0"))
@@ -761,6 +789,7 @@ async def _settle_winners(
                     room_snapshot = room2
 
     # Stamp the finished round + winner amounts onto the history record.
+    # winner_count is the number of winning boards (two boards => 2).
     if game_id:
         await asyncio.to_thread(
             wallet.record_round_finish,
@@ -768,6 +797,7 @@ async def _settle_winners(
             plan,
             room_snapshot.winning_pattern if room_snapshot else None,
             len(room_snapshot.winners) if room_snapshot else len(plan),
+            system_fee,
         )
 
     if room_snapshot is None:
@@ -781,6 +811,8 @@ async def _settle_winners(
         "winning_card_id": room_snapshot.winning_card_id,
         "derash": room_snapshot.derash,
         "derash_share": room_snapshot.derash_share,
+        "system_fee": str(system_fee),
+        "prize_pool": str(Decimal(room_snapshot.derash) - system_fee),
         "winners": room_snapshot.winners,
         "winner_count": len(room_snapshot.winners),
     })

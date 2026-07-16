@@ -248,6 +248,7 @@ def record_round_finish(
     winners: dict[str, Decimal],
     winning_pattern: str | None,
     winner_count: int,
+    system_fee: Decimal | None = None,
 ) -> None:
     """Mark a round finished and stamp winners/amounts onto their result rows.
 
@@ -270,6 +271,8 @@ def record_round_finish(
         game.winning_pattern = winning_pattern
         game.winner_count = winner_count
         game.finished_at = datetime.now(timezone.utc)
+        if system_fee is not None:
+            game.system_fee = system_fee
 
         for user_id, amount in winners.items():
             try:
@@ -322,41 +325,92 @@ def record_round_abandoned(game_code: str) -> None:
         db.close()
 
 
-def get_user_history(user_id: str, limit: int = 30) -> list[dict]:
-    """Recent finished/played rounds for a user, newest first."""
+def get_user_history(
+    user_id: str,
+    limit: int = 10,
+    offset: int = 0,
+) -> dict:
+    """Paginated finished/played rounds for a user, newest first.
+
+    Only the requested page is loaded from Postgres. ``played`` / ``wins`` are
+    aggregate counts over the user's full history so the Profile header stays
+    accurate without fetching every row.
+    """
 
     try:
         uid = UUID(user_id)
     except (ValueError, TypeError):
-        return []
+        return {"games": [], "total": 0, "played": 0, "wins": 0}
+
+    safe_limit = max(1, min(int(limit), 50))
+    safe_offset = max(0, int(offset))
 
     db = SessionLocal()
 
     try:
-        rows = (
+        base = (
             db.query(BingoGameResult, BingoGame)
             .join(BingoGame, BingoGameResult.game_id == BingoGame.id)
             .filter(BingoGameResult.user_id == uid)
-            .order_by(BingoGame.created_at.desc())
-            .limit(limit)
+        )
+
+        total = base.count()
+        wins = (
+            db.query(BingoGameResult)
+            .filter(
+                BingoGameResult.user_id == uid,
+                BingoGameResult.is_winner.is_(True),
+            )
+            .count()
+        )
+
+        rows = (
+            base.order_by(BingoGame.created_at.desc())
+            .offset(safe_offset)
+            .limit(safe_limit)
             .all()
         )
 
         history: list[dict] = []
+        game_ids = [game.id for _result, game in rows]
+
+        winners_by_game: dict = {gid: [] for gid in game_ids}
+        if game_ids:
+            winner_rows = (
+                db.query(BingoGameResult.game_id, User.first_name)
+                .join(User, User.id == BingoGameResult.user_id)
+                .filter(
+                    BingoGameResult.game_id.in_(game_ids),
+                    BingoGameResult.is_winner.is_(True),
+                )
+                .all()
+            )
+            for game_id, first_name in winner_rows:
+                name = (first_name or "Player").strip() or "Player"
+                names = winners_by_game.setdefault(game_id, [])
+                if name not in names:
+                    names.append(name)
 
         for result, game in rows:
+            gross = Decimal(game.derash)
+            fee = Decimal(getattr(game, "system_fee", Decimal("0")) or 0)
+            prize_pool = gross - fee
             history.append(
                 {
                     "game_id": game.game_code,
                     "status": game.status,
                     "total_boards": game.total_boards,
-                    "total_players": game.total_players,
-                    "derash": str(game.derash),
+                    "total_players": game.total_boards,
+                    "derash": str(gross),
+                    "system_fee": str(fee),
+                    "prize_pool": str(prize_pool),
                     "boards_count": result.boards_count,
                     "stake": str(result.stake_amount),
                     "is_winner": result.is_winner,
                     "amount_won": str(result.amount_won),
                     "winning_pattern": game.winning_pattern,
+                    "winner_count": game.winner_count,
+                    "winner_names": winners_by_game.get(game.id, []),
                     "created_at": (
                         game.created_at.isoformat()
                         if game.created_at is not None
@@ -365,6 +419,11 @@ def get_user_history(user_id: str, limit: int = 30) -> list[dict]:
                 }
             )
 
-        return history
+        return {
+            "games": history,
+            "total": total,
+            "played": total,
+            "wins": wins,
+        }
     finally:
         db.close()

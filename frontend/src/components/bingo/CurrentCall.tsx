@@ -8,12 +8,86 @@ interface CurrentCallProps {
   soundOn: boolean;
   autoOn: boolean;
   onToggleSound: () => void;
+  onEnableAudio?: () => void;
+  audioBlocked?: boolean;
   onToggleAuto: () => void;
   onRefresh: () => void;
   compact?: boolean;
   showAuto?: boolean;
+  showControls?: boolean;
   /** Glow the current-call ball during the winner hold beat. */
   emphasizeCall?: boolean;
+}
+
+interface CallControlsProps {
+  soundOn: boolean;
+  autoOn: boolean;
+  onToggleSound: () => void;
+  onEnableAudio?: () => void;
+  audioBlocked?: boolean;
+  onToggleAuto: () => void;
+  onRefresh: () => void;
+  showAuto?: boolean;
+  compact?: boolean;
+}
+
+export function CallControls({
+  soundOn,
+  autoOn,
+  onToggleSound,
+  onEnableAudio,
+  audioBlocked = false,
+  onToggleAuto,
+  onRefresh,
+  showAuto = true,
+  compact = false,
+}: CallControlsProps) {
+  const buttonClass = compact ? "py-1.5 text-[10px]" : "py-2 text-xs";
+
+  return (
+    <div className={`grid gap-1 ${showAuto ? "grid-cols-3" : "grid-cols-2"}`}>
+      <button
+        type="button"
+        onClick={onRefresh}
+        className={`flex items-center justify-center gap-1 rounded-xl bg-blue-600 font-bold text-white shadow-sm transition active:scale-95 ${buttonClass}`}
+      >
+        <RefreshCw size={compact ? 12 : 14} />
+        Refresh
+      </button>
+
+      <button
+        type="button"
+        onClick={audioBlocked ? onEnableAudio : onToggleSound}
+        className={`flex items-center justify-center gap-1 rounded-xl font-bold shadow-sm transition active:scale-95 ${buttonClass} ${
+          audioBlocked
+            ? "bg-amber-500 text-amber-950 ring-1 ring-amber-300"
+            : soundOn
+              ? "bg-purple-700 text-white"
+              : "bg-white/80 text-purple-700 ring-1 ring-purple-200 dark:bg-white/10 dark:text-purple-200 dark:ring-white/10"
+        }`}
+      >
+        {audioBlocked || soundOn ? (
+          <Volume2 size={compact ? 12 : 14} />
+        ) : (
+          <VolumeX size={compact ? 12 : 14} />
+        )}
+        {audioBlocked ? "Enable" : "Sound"}
+      </button>
+
+      {showAuto && (
+        <button
+          type="button"
+          onClick={onToggleAuto}
+          className={`flex items-center justify-center gap-1 rounded-xl font-bold text-white shadow-sm transition active:scale-95 ${buttonClass} ${
+            autoOn ? "bg-green-500" : "bg-gray-400"
+          }`}
+        >
+          <Zap size={compact ? 12 : 14} />
+          Auto {autoOn ? "ON" : "OFF"}
+        </button>
+      )}
+    </div>
+  );
 }
 
 export function CurrentCall({
@@ -22,10 +96,13 @@ export function CurrentCall({
   soundOn,
   autoOn,
   onToggleSound,
+  onEnableAudio,
+  audioBlocked = false,
   onToggleAuto,
   onRefresh,
   compact = false,
   showAuto = true,
+  showControls = true,
   emphasizeCall = false,
 }: CurrentCallProps) {
   const recent = [...drawn].reverse().slice(0, compact ? 4 : 5);
@@ -42,7 +119,7 @@ export function CurrentCall({
         </span>
         <div
           className={`flex items-center justify-center rounded-full bg-orange-500 font-extrabold text-white shadow-lg transition-transform ${
-            compact ? "h-11 w-11 text-sm" : "h-12 w-12 text-base"
+            compact ? "h-10 w-10 text-xs" : "h-12 w-12 text-base"
           } ${emphasizeCall ? "scale-110 animate-pulse ring-4 ring-yellow-300" : ""}`}
         >
           {currentBall !== null ? callLabel(currentBall) : "--"}
@@ -64,7 +141,7 @@ export function CurrentCall({
               <div
                 key={`${n}-${drawn.lastIndexOf(n)}`}
                 className={`flex shrink-0 items-center justify-center rounded-full font-bold shadow ${
-                  compact ? "h-8 w-8 text-[10px]" : "h-9 w-9 text-[11px]"
+                  compact ? "h-7 w-7 text-[9px]" : "h-9 w-9 text-[11px]"
                 } ${isLatest && emphasizeCall ? "ring-2 ring-yellow-300 scale-110" : ""}`}
                 style={{ backgroundColor: color.bg, color: color.text }}
               >
@@ -75,42 +152,19 @@ export function CurrentCall({
         )}
       </div>
 
-      <div className={`grid gap-1.5 ${showAuto ? "grid-cols-3" : "grid-cols-2"}`}>
-        <button
-          type="button"
-          onClick={onRefresh}
-          className="flex items-center justify-center gap-1 rounded-xl bg-blue-600 py-2 text-xs font-bold text-white shadow active:scale-95"
-        >
-          <RefreshCw size={14} />
-          Refresh
-        </button>
-
-        <button
-          type="button"
-          onClick={onToggleSound}
-          className={`flex items-center justify-center gap-1 rounded-xl py-2 text-xs font-bold shadow active:scale-95 ${
-            soundOn
-              ? "bg-purple-700 text-white"
-              : "bg-white/80 text-purple-700 ring-1 ring-purple-200 dark:bg-white/10 dark:text-purple-200 dark:ring-white/10"
-          }`}
-        >
-          {soundOn ? <Volume2 size={14} /> : <VolumeX size={14} />}
-          Sound
-        </button>
-
-        {showAuto && (
-          <button
-            type="button"
-            onClick={onToggleAuto}
-            className={`flex items-center justify-center gap-1 rounded-xl py-2 text-xs font-bold text-white shadow active:scale-95 ${
-              autoOn ? "bg-green-500" : "bg-gray-400"
-            }`}
-          >
-            <Zap size={14} />
-            Auto {autoOn ? "ON" : "OFF"}
-          </button>
-        )}
-      </div>
+      {showControls && (
+        <CallControls
+          soundOn={soundOn}
+          autoOn={autoOn}
+          onToggleSound={onToggleSound}
+          onEnableAudio={onEnableAudio}
+          audioBlocked={audioBlocked}
+          onToggleAuto={onToggleAuto}
+          onRefresh={onRefresh}
+          showAuto={showAuto}
+          compact={compact}
+        />
+      )}
     </div>
   );
 }

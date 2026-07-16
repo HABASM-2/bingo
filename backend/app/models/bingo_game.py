@@ -71,8 +71,15 @@ class BingoGame(Base):
         nullable=False,
     )
 
-    # Locked prize pool = total_boards * board_price.
+    # Locked prize pool = total_boards * board_price (gross, before house cut).
     derash: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2),
+        default=0,
+        nullable=False,
+    )
+
+    # House cut withheld from derash at settlement (0 / 10% / 20% by players).
+    system_fee: Mapped[Decimal] = mapped_column(
         Numeric(12, 2),
         default=0,
         nullable=False,
