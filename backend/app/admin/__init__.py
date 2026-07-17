@@ -1,0 +1,1 @@
+"""Server-authorized administration API."""

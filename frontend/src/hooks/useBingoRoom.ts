@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useWebSocket } from "./useWebSocket";
 import type { WebSocketStatus } from "./useWebSocket";
 import { bingoWebSocketUrl } from "../services/bingo";
+import { getLanguage, mapServerMessage, tGlobal } from "../i18n";
 import type {
   BingoClientMessage,
   BingoServerMessage,
@@ -83,6 +84,8 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
     setSecondsLeft(Math.max(0, seconds));
   }, []);
 
+  const sendRef = useRef<((msg: BingoClientMessage) => void) | null>(null);
+
   const handleMessage = useCallback(
     (message: BingoServerMessage) => {
       switch (message.type) {
@@ -118,6 +121,40 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
           setPlayerCount(message.count);
           break;
 
+        case "player_left":
+          setPlayerCount(message.count);
+          setRoomState((prev) => {
+            if (!prev) return prev;
+            return {
+              ...prev,
+              players: prev.players.filter((p) => p.user_id !== message.user_id),
+              player_count: message.count,
+            };
+          });
+          break;
+
+        case "board_delta":
+          setRoomState((prev) => {
+            if (!prev || prev.status !== "lobby") return prev;
+            let myBoards = prev.my_boards;
+            if (message.action === "released" && message.board_id != null) {
+              myBoards = myBoards.filter((id) => id !== message.board_id);
+            } else if (message.action === "released_all") {
+              const drop = new Set(message.board_ids);
+              myBoards = myBoards.filter((id) => !drop.has(id));
+            }
+            return {
+              ...prev,
+              my_boards: myBoards,
+              taken_boards: message.taken_boards,
+              selected_boards_count: message.selected_boards_count,
+              players_in_round: message.players_in_round,
+              projected_derash: message.projected_derash,
+              derash: message.derash,
+            };
+          });
+          break;
+
         case "lobby_tick":
           syncCountdown(message.seconds_left, true);
           break;
@@ -132,18 +169,33 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
           break;
 
         case "toast":
-          flashToast(message.message);
+          flashToast(mapServerMessage(getLanguage(), message.message));
           break;
 
-        case "error":
-          setErrorMessage(message.message);
-          flashToast(message.message);
+        case "error": {
+          const localizedMessage = mapServerMessage(getLanguage(), message.message);
+          setErrorMessage(localizedMessage);
+          flashToast(localizedMessage);
+          const raw = message.message.toLowerCase();
+          if (
+            raw.includes("board")
+            || raw.includes("afford")
+            || raw.includes("balance")
+            || raw.includes("taken")
+          ) {
+            sendRef.current?.({ type: "join" });
+          }
           break;
+        }
 
         case "pong":
         case "bingo_result":
           if (message.type === "bingo_result" && !message.valid) {
-            flashToast(message.reason ?? "Not a winner yet - keep playing!");
+            flashToast(
+              message.reason
+                ? mapServerMessage(getLanguage(), message.reason)
+                : tGlobal("bingo.notWinner"),
+            );
           }
           break;
       }
@@ -158,6 +210,10 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
     url,
     onMessage: handleMessage,
   });
+
+  useEffect(() => {
+    sendRef.current = send;
+  }, [send]);
 
   // Smoothly interpolate the countdown between server messages so it always
   // keeps ticking (never freezes) and can't drift negative.

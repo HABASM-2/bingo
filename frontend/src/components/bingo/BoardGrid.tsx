@@ -1,3 +1,5 @@
+import { useI18n } from "../../i18n";
+
 interface BoardGridProps {
   poolMax: number;
   mine: Set<number>;
@@ -13,6 +15,7 @@ interface BoardGridProps {
  * - Free: tappable
  */
 export function BoardGrid({ poolMax, mine, taken, locked, onToggle }: BoardGridProps) {
+  const { t } = useI18n();
   const boards = Array.from({ length: poolMax }, (_, i) => i + 1);
 
   return (
@@ -31,10 +34,10 @@ export function BoardGrid({ poolMax, mine, taken, locked, onToggle }: BoardGridP
               onClick={() => onToggle(id)}
               aria-label={
                 isMine
-                  ? `Your board ${id}`
+                  ? t("bingo.boardAriaYours", { id })
                   : isOthers
-                    ? `Board ${id} taken by another player`
-                    : `Select board ${id}`
+                    ? t("bingo.boardAriaTaken", { id })
+                    : t("bingo.boardAriaSelect", { id })
               }
               className={`flex h-8 items-center justify-center rounded-lg text-[11px] font-bold transition-all duration-150 ${
                 isMine

@@ -133,10 +133,16 @@ async def place_bet(
         store.recalc_totals(rnd)
         await store.save_round(rnd)
 
+    # Delta only — clients merge ``bet`` into local ``round.bets``. Redis still
+    # holds the full growing bet list; we just stop fanning it to every socket.
     msg = {
         "type": "bet_placed",
         "bet": bet.to_dict(),
-        "round": rnd.to_dict(),
+        "round_id": rnd.round_id,
+        "total_stake": rnd.total_stake,
+        "total_payout": rnd.total_payout,
+        "pool_remaining": str(rnd.pool_left()),
+        "player_count": rnd.player_count(),
     }
     await hub.broadcast(msg)
     return {**msg, "balance": balance}
@@ -201,7 +207,12 @@ async def cash_out(user_id: str, bet_id: str | None = None, slot: int | None = N
         "cashout_at": float(mult_live),
         "win": str(win),
         "multiplier": mult_live,
-        "round": rnd.to_dict(),
+        "bet": target.to_dict(),
+        "round_id": rnd.round_id,
+        "total_stake": rnd.total_stake,
+        "total_payout": rnd.total_payout,
+        "pool_remaining": str(rnd.pool_left()),
+        "player_count": rnd.player_count(),
     }
     await hub.broadcast(msg)
 

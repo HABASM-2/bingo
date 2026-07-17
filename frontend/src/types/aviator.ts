@@ -45,8 +45,12 @@ export type AviatorServerMessage =
   | {
       type: "bet_placed";
       bet: AviatorBetRow;
-      round: AviatorRoundState;
-      balance: string;
+      round_id: string;
+      total_stake: string;
+      total_payout: string;
+      pool_remaining: string;
+      player_count: number;
+      balance?: string;
     }
   | {
       type: "cashout";
@@ -55,8 +59,13 @@ export type AviatorServerMessage =
       cashout_at: number;
       win: string;
       multiplier: number;
-      round: AviatorRoundState;
-      balance: string;
+      bet: AviatorBetRow;
+      round_id: string;
+      total_stake: string;
+      total_payout: string;
+      pool_remaining: string;
+      player_count: number;
+      balance?: string;
     }
   | { type: "error"; message: string }
   | { type: "ping" }

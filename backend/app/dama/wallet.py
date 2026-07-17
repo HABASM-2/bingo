@@ -20,7 +20,7 @@ REFUND_TX_TYPE = "DAMA_REFUND"
 # House cut on the pot (2 × stake). Winner receives the rest.
 FEE_RATE = Decimal("0.10")
 
-MIN_STAKE = Decimal("1")
+MIN_STAKE = Decimal("5")
 MAX_STAKE = Decimal("500")
 PRESET_STAKES = (Decimal("5"), Decimal("10"), Decimal("15"))
 

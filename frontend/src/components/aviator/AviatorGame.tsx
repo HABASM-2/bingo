@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronLeft, ChevronRight, Clock, Minus, Plus } from "lucide-react";
+import { ChevronLeft, ChevronRight, Clock, LoaderCircle, Minus, Plus } from "lucide-react";
 import { useAviator, AVIATOR_START_MULT } from "../../hooks/useAviator";
 import type { AviatorBetRow, AviatorPhase } from "../../types/aviator";
 import { getAviatorHistory } from "../../services/aviator";
 import type { AviatorHistoryBet } from "../../services/aviator";
 import { AviatorPlane } from "./AviatorPlane";
+import { useI18n } from "../../i18n";
 
 const QUICK_AMOUNTS = [1, 2, 5, 10] as const;
 type BetsTab = "all" | "mine";
@@ -141,6 +142,7 @@ export function AviatorGame({
   onBalanceChange,
   isActive = true,
 }: AviatorGameProps) {
+  const { t, ts } = useI18n();
   const [betsTab, setBetsTab] = useState<BetsTab>("all");
   const [amount, setAmount] = useState(5);
   const [bettingLeft, setBettingLeft] = useState(0);
@@ -225,7 +227,7 @@ export function AviatorGame({
         setHistoryTotal(data.total);
       })
       .catch(() => {
-        if (!cancelled) setListError("Could not load this list");
+        if (!cancelled) setListError(t("aviator.listError"));
       })
       .finally(() => {
         if (!cancelled) setListLoading(false);
@@ -234,7 +236,7 @@ export function AviatorGame({
     return () => {
       cancelled = true;
     };
-  }, [betsTab, isActive, historyPage, aviator.round?.round_id]);
+  }, [betsTab, isActive, historyPage, aviator.round?.round_id, t]);
 
   const historyPageCount = Math.max(1, Math.ceil(historyTotal / HISTORY_PAGE_SIZE));
   const historyFrom = historyTotal === 0 ? 0 : historyPage * HISTORY_PAGE_SIZE + 1;
@@ -249,21 +251,21 @@ export function AviatorGame({
   const playerCount = aviator.round?.player_count ?? 0;
 
   return (
-    <div className="flex h-full min-h-0 flex-col bg-[#0b0e12] text-white">
+    <div className="flex h-full min-h-0 flex-col bg-slate-100 text-slate-950 transition-colors duration-300 dark:bg-[#0b0e12] dark:text-white">
       <header className="flex shrink-0 items-center justify-between px-3 pb-1 pt-2">
         <h1 className="text-[1.65rem] font-black italic tracking-tight text-[#E50539]">
-          Aviator
+          {t("aviator.title")}
         </h1>
         <div className="flex items-center gap-1.5">
-          <span className="rounded-lg bg-white/10 px-2 py-1 text-[10px] font-bold tabular-nums text-white/70">
-            {displayBalance != null ? Number(displayBalance).toFixed(2) : "—"} ETB
+          <span className="rounded-lg bg-white px-2 py-1 text-[10px] font-bold tabular-nums text-slate-700 shadow-sm ring-1 ring-slate-200 dark:bg-white/10 dark:text-white/70 dark:shadow-none dark:ring-0">
+            {displayBalance != null ? Number(displayBalance).toFixed(2) : "—"} {t("common.etb")}
           </span>
         </div>
       </header>
 
       {aviator.error && (
-        <p className="mx-3 mb-1 rounded-lg bg-rose-500/20 px-2 py-1 text-center text-xs font-bold text-rose-200">
-          {aviator.error}
+        <p className="mx-3 mb-1 rounded-lg bg-rose-100 px-2 py-1 text-center text-xs font-bold text-rose-700 dark:bg-rose-500/20 dark:text-rose-200">
+          {ts(aviator.error)}
         </p>
       )}
 
@@ -276,13 +278,13 @@ export function AviatorGame({
             {h.toFixed(2)}x
           </span>
         ))}
-        <button type="button" className="shrink-0 rounded-md bg-white/10 p-1 text-white/60">
+        <button type="button" className="shrink-0 rounded-md bg-white p-1 text-slate-500 shadow-sm ring-1 ring-slate-200 dark:bg-white/10 dark:text-white/60 dark:shadow-none dark:ring-0">
           <Clock size={14} />
         </button>
       </div>
 
       <div
-        className="relative mx-3 shrink-0 overflow-hidden rounded-xl bg-[#0a0812]"
+        className="relative mx-3 shrink-0 overflow-hidden rounded-xl bg-slate-50 shadow-sm ring-1 ring-slate-200 dark:bg-[#0a0812] dark:shadow-none dark:ring-0"
         style={{ height: "min(58vw, 300px)", minHeight: 230 }}
       >
         <style>
@@ -319,18 +321,10 @@ export function AviatorGame({
         </style>
         {/* The backdrop is camera-independent, avoiding blank edges while following. */}
         <div
-          className="absolute inset-0"
-          style={{
-            background:
-              "repeating-conic-gradient(from -8deg at 0% 100%, #221833 0deg 6deg, #120e1c 6deg 12deg)",
-          }}
+          className="absolute inset-0 bg-[repeating-conic-gradient(from_-8deg_at_0%_100%,#e2e8f0_0deg_6deg,#f8fafc_6deg_12deg)] dark:bg-[repeating-conic-gradient(from_-8deg_at_0%_100%,#221833_0deg_6deg,#120e1c_6deg_12deg)]"
         />
         <div
-          className="absolute inset-0"
-          style={{
-            background:
-              "radial-gradient(ellipse 70% 60% at 50% 55%, rgba(80,40,120,0.2) 0%, transparent 70%)",
-          }}
+          className="absolute inset-0 bg-[radial-gradient(ellipse_70%_60%_at_50%_55%,rgba(244,63,94,0.10)_0%,transparent_70%)] dark:bg-[radial-gradient(ellipse_70%_60%_at_50%_55%,rgba(80,40,120,0.2)_0%,transparent_70%)]"
         />
 
         {/* Camera remains fixed for takeoff, then smoothly follows near the right edge. */}
@@ -393,15 +387,15 @@ export function AviatorGame({
           </div>
         )}
 
-        <div className="absolute inset-0 bg-gradient-to-t from-[#0a0812]/70 via-transparent to-transparent pointer-events-none" />
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-slate-200/70 via-transparent to-transparent dark:from-[#0a0812]/70" />
 
         <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10">
           {phase === "betting" ? (
             <div className="flex w-[72%] flex-col items-center">
-              <p className="text-base font-extrabold uppercase tracking-[0.2em] text-white/85">
-                Next round in
+              <p className="text-base font-extrabold uppercase tracking-[0.2em] text-slate-700 dark:text-white/85">
+                {t("aviator.nextRoundIn")}
               </p>
-              <div className="mt-4 h-2.5 w-full overflow-hidden rounded-full bg-black/45 p-[2px] ring-1 ring-white/15 shadow-[0_0_18px_rgba(229,5,57,0.2)]">
+              <div className="mt-4 h-2.5 w-full overflow-hidden rounded-full bg-slate-300/80 p-[2px] ring-1 ring-slate-400/30 shadow-[0_0_18px_rgba(229,5,57,0.15)] dark:bg-black/45 dark:ring-white/15">
                 <div
                   className="relative h-full origin-left overflow-hidden rounded-full bg-gradient-to-r from-[#9e0329] via-[#E50539] to-[#ff4b70] will-change-transform"
                   style={{
@@ -417,13 +411,13 @@ export function AviatorGame({
             <>
               {phase === "crashed" && (
                 <p className="mb-1 text-base font-extrabold uppercase tracking-[0.12em] text-[#E50539]">
-                  Flew away!
+                  {t("aviator.flewAway")}
                 </p>
               )}
               <p
                 className={`font-black tabular-nums leading-none tracking-tight ${
                   phase === "flying"
-                    ? "text-[3.25rem] text-white drop-shadow-[0_0_24px_rgba(255,255,255,0.15)]"
+                    ? "text-[3.25rem] text-slate-950 drop-shadow-[0_0_20px_rgba(255,255,255,0.8)] dark:text-white dark:drop-shadow-[0_0_24px_rgba(255,255,255,0.15)]"
                     : phase === "crashed"
                       ? "text-[2.75rem] text-[#E50539]"
                       : "hidden"
@@ -432,8 +426,8 @@ export function AviatorGame({
                 {displayMult.toFixed(2)}x
               </p>
               {phase === "flying" && playerCount > 0 && (
-                <p className="mt-1 text-[10px] font-semibold text-white/40">
-                  {playerCount} player{playerCount !== 1 ? "s" : ""} in round
+                <p className="mt-1 text-[10px] font-semibold text-slate-500 dark:text-white/40">
+                  {t("aviator.playersInRound", { count: playerCount })}
                 </p>
               )}
             </>
@@ -447,7 +441,7 @@ export function AviatorGame({
         )}
       </div>
 
-      <div className="mx-3 mt-2 shrink-0 rounded-xl bg-[#141820] ring-1 ring-white/5">
+      <div className="mx-3 mt-2 shrink-0 rounded-xl bg-white shadow-sm ring-1 ring-slate-200 dark:bg-[#141820] dark:shadow-none dark:ring-white/5">
         <div className="p-2.5">
           <BetSlot
             amount={amount}
@@ -458,6 +452,7 @@ export function AviatorGame({
             multiplier={aviator.displayMultiplier}
             balance={displayBalance}
             pendingNextBet={pendingNextBet}
+            pendingAction={aviator.pendingAction}
             onBet={() => {
               setPendingNextBet(false);
               aviator.placeBet(String(amount), 0);
@@ -469,12 +464,12 @@ export function AviatorGame({
         </div>
       </div>
 
-      <div className="mt-2 flex min-h-0 flex-1 flex-col border-t border-white/5 bg-[#0d1015]">
-        <div className="flex shrink-0 border-b border-white/5">
+      <div className="mt-2 flex min-h-0 flex-1 flex-col border-t border-slate-200 bg-white/70 dark:border-white/5 dark:bg-[#0d1015]">
+        <div className="flex shrink-0 border-b border-slate-200 dark:border-white/5">
           {(
             [
-              ["all", `All Bets · ${aviator.round?.bets.length ?? 0}`],
-              ["mine", "My Bets"],
+              ["all", t("aviator.allBets", { count: aviator.round?.bets.length ?? 0 })],
+              ["mine", t("aviator.myBets")],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -485,7 +480,7 @@ export function AviatorGame({
                 if (id === "mine") setHistoryPage(0);
               }}
               className={`flex-1 py-2.5 text-[11px] font-bold uppercase tracking-wide ${
-                betsTab === id ? "border-b-2 border-[#28a909] text-white" : "text-white/40"
+                betsTab === id ? "border-b-2 border-[#28a909] text-slate-950 dark:text-white" : "text-slate-500 dark:text-white/40"
               }`}
             >
               {label}
@@ -495,13 +490,13 @@ export function AviatorGame({
 
         <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
           {listLoading && betsTab !== "all" ? (
-            <p className="py-6 text-center text-xs text-white/35">Loading…</p>
+            <p className="py-6 text-center text-xs text-slate-500 dark:text-white/35">{t("common.loadingEllipsis")}</p>
           ) : listError && betsTab !== "all" ? (
-            <p className="py-6 text-center text-xs text-rose-300/80">{listError}</p>
+            <p className="py-6 text-center text-xs text-rose-600 dark:text-rose-300/80">{listError}</p>
           ) : betsTab === "all" && (aviator.round?.bets.length ?? 0) === 0 ? (
-            <p className="py-6 text-center text-xs text-white/35">No bets this round yet</p>
+            <p className="py-6 text-center text-xs text-slate-500 dark:text-white/35">{t("aviator.noBetsRound")}</p>
           ) : betsTab === "mine" && historyBets.length === 0 ? (
-            <p className="py-6 text-center text-xs text-white/35">No Aviator history yet</p>
+            <p className="py-6 text-center text-xs text-slate-500 dark:text-white/35">{t("aviator.noHistory")}</p>
           ) : betsTab === "all" ? (
             <ul className="space-y-0.5">
               {(aviator.round?.bets ?? []).map((bet) => (
@@ -521,28 +516,28 @@ export function AviatorGame({
                 ))}
               </ul>
               {historyTotal > HISTORY_PAGE_SIZE ? (
-                <div className="mt-2 flex items-center justify-between gap-2 border-t border-white/5 pt-2">
+                <div className="mt-2 flex items-center justify-between gap-2 border-t border-slate-200 pt-2 dark:border-white/5">
                   <button
                     type="button"
                     disabled={historyPage <= 0 || listLoading}
                     onClick={() => setHistoryPage((p) => Math.max(0, p - 1))}
-                    className="flex items-center gap-0.5 rounded-md px-2 py-1.5 text-[11px] font-semibold text-white/70 disabled:opacity-30"
+                    className="flex items-center gap-0.5 rounded-md px-2 py-1.5 text-[11px] font-semibold text-slate-700 disabled:opacity-30 dark:text-white/70"
                   >
                     <ChevronLeft className="h-3.5 w-3.5" />
-                    Prev
+                    {t("common.prev")}
                   </button>
-                  <span className="text-[10px] tabular-nums text-white/45">
+                  <span className="text-[10px] tabular-nums text-slate-500 dark:text-white/45">
                     {historyFrom}–{historyTo} / {historyTotal}
-                    <span className="text-white/25"> · </span>
+                    <span className="text-slate-300 dark:text-white/25"> · </span>
                     {historyPage + 1}/{historyPageCount}
                   </span>
                   <button
                     type="button"
                     disabled={historyPage + 1 >= historyPageCount || listLoading}
                     onClick={() => setHistoryPage((p) => p + 1)}
-                    className="flex items-center gap-0.5 rounded-md px-2 py-1.5 text-[11px] font-semibold text-white/70 disabled:opacity-30"
+                    className="flex items-center gap-0.5 rounded-md px-2 py-1.5 text-[11px] font-semibold text-slate-700 disabled:opacity-30 dark:text-white/70"
                   >
-                    Next
+                    {t("common.next")}
                     <ChevronRight className="h-3.5 w-3.5" />
                   </button>
                 </div>
@@ -564,10 +559,11 @@ function BetRowItem({
   isYou: boolean;
   compact: boolean;
 }) {
+  const { t } = useI18n();
   return (
     <li
       className={`flex items-center gap-2 rounded-lg px-1.5 py-1.5 ${
-        isYou ? "bg-white/5 ring-1 ring-[#28a909]/30" : ""
+        isYou ? "bg-emerald-50 ring-1 ring-[#28a909]/30 dark:bg-white/5" : ""
       }`}
     >
       <span
@@ -578,22 +574,22 @@ function BetRowItem({
       >
         {bet.display_name.slice(0, 1).toUpperCase()}
       </span>
-      <span className={`min-w-0 flex-1 truncate font-semibold ${isYou ? "text-emerald-300" : "text-white/80"} ${compact ? "text-xs" : "text-sm"}`}>
-        {isYou ? "You" : bet.display_name}
+      <span className={`min-w-0 flex-1 truncate font-semibold ${isYou ? "text-emerald-700 dark:text-emerald-300" : "text-slate-800 dark:text-white/80"} ${compact ? "text-xs" : "text-sm"}`}>
+        {isYou ? t("common.you") : bet.display_name}
       </span>
       <div className={`shrink-0 text-right tabular-nums ${compact ? "text-[10px]" : "text-xs"}`}>
-        <span className="text-white/55">{Number(bet.stake).toFixed(2)}</span>
+        <span className="text-slate-500 dark:text-white/55">{Number(bet.stake).toFixed(2)}</span>
         {bet.status === "cashed" && bet.cashout_at != null ? (
           <>
-            <span className="text-white/25"> · </span>
+            <span className="text-slate-300 dark:text-white/25"> · </span>
             <span className="font-bold text-emerald-400">{bet.cashout_at.toFixed(2)}x</span>
-            <span className="text-white/25"> · </span>
-            <span className="font-bold text-white">{Number(bet.win).toFixed(2)}</span>
+            <span className="text-slate-300 dark:text-white/25"> · </span>
+            <span className="font-bold text-slate-950 dark:text-white">{Number(bet.win).toFixed(2)}</span>
           </>
         ) : bet.status === "lost" ? (
           <span className="text-rose-400/80"> · —</span>
         ) : (
-          <span className="text-white/25"> · …</span>
+          <span className="text-slate-300 dark:text-white/25"> · …</span>
         )}
       </div>
     </li>
@@ -601,37 +597,38 @@ function BetRowItem({
 }
 
 function HistoryBetItem({ bet }: { bet: AviatorHistoryBet }) {
+  const { t, formatDate } = useI18n();
   const won = bet.outcome === "won";
   const when = bet.created_at
-    ? new Date(bet.created_at).toLocaleDateString(undefined, {
+    ? formatDate(bet.created_at, {
         month: "short",
         day: "numeric",
       })
     : "";
 
   return (
-    <li className="flex items-center gap-2 rounded-lg bg-white/[0.03] px-2 py-2">
+    <li className="flex items-center gap-2 rounded-lg bg-slate-100 px-2 py-2 dark:bg-white/[0.03]">
       <span
         className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-xs font-black ${
-          won ? "bg-emerald-500/20 text-emerald-300" : "bg-rose-500/15 text-rose-300"
+          won ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300" : "bg-rose-100 text-rose-700 dark:bg-rose-500/15 dark:text-rose-300"
         }`}
       >
         {won ? "W" : "L"}
       </span>
       <div className="min-w-0 flex-1">
-        <p className="truncate text-xs font-bold text-white/80">
-          {bet.round_code || "Aviator round"}
+        <p className="truncate text-xs font-bold text-slate-800 dark:text-white/80">
+          {bet.round_code || t("aviator.roundLabel")}
         </p>
-        <p className="text-[10px] text-white/35">
-          {when} · crashed {Number(bet.crash_multiplier ?? 1).toFixed(2)}x
+        <p className="text-[10px] text-slate-500 dark:text-white/35">
+          {t("aviator.crashedAt", { when, mult: Number(bet.crash_multiplier ?? 1).toFixed(2) })}
         </p>
       </div>
       <div className="shrink-0 text-right text-xs tabular-nums">
-        <p className="text-white/55">{Number(bet.stake).toFixed(2)} ETB</p>
+        <p className="text-slate-500 dark:text-white/55">{Number(bet.stake).toFixed(2)} {t("common.etb")}</p>
         <p className={won ? "font-bold text-emerald-400" : "font-bold text-rose-400"}>
           {won
             ? `${Number(bet.cashout_multiplier).toFixed(2)}x · ${Number(bet.amount_won).toFixed(2)}`
-            : "Lost"}
+            : t("aviator.lost")}
         </p>
       </div>
     </li>
@@ -647,6 +644,7 @@ function BetSlot({
   multiplier,
   balance,
   pendingNextBet,
+  pendingAction,
   onBet,
   onCashOut,
   onQueueNextRound,
@@ -660,11 +658,13 @@ function BetSlot({
   multiplier: number;
   balance: string | null;
   pendingNextBet: boolean;
+  pendingAction: "bet" | "cashout" | null;
   onBet: () => void;
   onCashOut: () => void;
   onQueueNextRound: () => void;
   onCancelNextRound: () => void;
 }) {
+  const { t } = useI18n();
   const active = myBet?.status === "active";
   const cashed = myBet?.status === "cashed";
   const canBet = !myBet && phase === "betting" && bettingLeft > 0;
@@ -673,55 +673,58 @@ function BetSlot({
     !active &&
     !pendingNextBet &&
     (phase === "flying" || phase === "crashed" || phase === "waiting");
+  const isLoading = pendingAction !== null || pendingNextBet;
   const stake = Number(myBet?.stake ?? amount);
   const potential = active ? stake * multiplier : null;
 
-  let label = "BET";
-  if (canCashOut) label = "CASH OUT";
-  else if (pendingNextBet) label = "CANCEL NEXT";
-  else if (canQueueNext) label = "NEXT ROUND";
-  else if (phase === "betting" && bettingLeft <= 0) label = "WAIT";
-  else if (active && phase === "flying") label = "IN PLAY";
+  let label = t("aviator.bet");
+  if (canCashOut) label = t("aviator.cashOut");
+  else if (pendingNextBet) label = t("aviator.cancelNext");
+  else if (canQueueNext) label = t("aviator.nextRound");
+  else if (phase === "betting" && bettingLeft <= 0) label = t("aviator.wait");
+  else if (active && phase === "flying") label = t("aviator.inPlay");
 
   const disabled =
+    pendingAction !== null ||
     (active && phase === "flying" && !canCashOut) ||
     (!canBet && !canCashOut && !canQueueNext && !pendingNextBet) ||
     (canBet && Number(balance) < amount) ||
     (canQueueNext && Number(balance) < amount);
 
   return (
-    <div className="rounded-lg bg-[#1c2230] p-2">
+    <div className="rounded-lg bg-slate-100 p-2 ring-1 ring-slate-200 dark:bg-[#1c2230] dark:ring-0">
       <div className="flex items-center gap-1">
-        <button type="button" disabled={active} onClick={() => onAmount(Math.max(1, amount - 1))} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#0f1318] text-white/70 ring-1 ring-white/10 disabled:opacity-35">
+        <button type="button" disabled={active || isLoading} onClick={() => onAmount(Math.max(1, amount - 1))} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-slate-600 ring-1 ring-slate-200 disabled:opacity-35 dark:bg-[#0f1318] dark:text-white/70 dark:ring-white/10">
           <Minus size={16} />
         </button>
-        <div className={`flex-1 rounded-lg bg-[#0f1318] py-2 text-center ring-1 ring-white/10 ${active ? "opacity-50" : ""}`}>
+        <div className={`flex-1 rounded-lg bg-white py-2 text-center ring-1 ring-slate-200 dark:bg-[#0f1318] dark:ring-white/10 ${active || isLoading ? "opacity-50" : ""}`}>
           <span className="text-lg font-bold tabular-nums">{amount.toFixed(2)}</span>
         </div>
-        <button type="button" disabled={active} onClick={() => onAmount(amount + 1)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-[#0f1318] text-white/70 ring-1 ring-white/10 disabled:opacity-35">
+        <button type="button" disabled={active || isLoading} onClick={() => onAmount(amount + 1)} className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-white text-slate-600 ring-1 ring-slate-200 disabled:opacity-35 dark:bg-[#0f1318] dark:text-white/70 dark:ring-white/10">
           <Plus size={16} />
         </button>
       </div>
       <div className="mt-1.5 flex gap-1">
         {QUICK_AMOUNTS.map((q) => (
-          <button key={q} type="button" disabled={active} onClick={() => onAmount(q)} className="flex-1 rounded-md bg-[#0f1318] py-1 text-[10px] font-bold text-white/50 ring-1 ring-white/5 disabled:opacity-35">
+          <button key={q} type="button" disabled={active || isLoading} onClick={() => onAmount(q)} className="flex-1 rounded-md bg-white py-1 text-[10px] font-bold text-slate-600 ring-1 ring-slate-200 disabled:opacity-35 dark:bg-[#0f1318] dark:text-white/50 dark:ring-white/5">
             {q}
           </button>
         ))}
       </div>
       {cashed && (
         <div className="mt-2 flex items-center justify-between rounded-lg bg-emerald-500/10 px-2.5 py-1.5 text-[11px] opacity-60 ring-1 ring-emerald-400/20">
-          <span className="font-bold uppercase tracking-wide text-emerald-300">
-            Cashed out
+          <span className="font-bold uppercase tracking-wide text-emerald-700 dark:text-emerald-300">
+            {t("aviator.cashedOut")}
           </span>
-          <span className="tabular-nums text-emerald-200">
-            {myBet?.cashout_at?.toFixed(2)}x · {Number(myBet?.win ?? 0).toFixed(2)} ETB
+          <span className="tabular-nums text-emerald-600 dark:text-emerald-200">
+            {myBet?.cashout_at?.toFixed(2)}x · {Number(myBet?.win ?? 0).toFixed(2)} {t("common.etb")}
           </span>
         </div>
       )}
       <button
         type="button"
         disabled={disabled}
+        aria-busy={isLoading}
         onClick={() => {
           if (canCashOut) onCashOut();
           else if (canBet) onBet();
@@ -736,9 +739,16 @@ function BetSlot({
                 : "bg-[#28a909] text-white"
         }`}
       >
-        {canCashOut && potential != null
-          ? `CASH OUT ${potential.toFixed(2)}`
-          : label}
+        <span className="flex items-center justify-center gap-2">
+          {isLoading && <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />}
+          {pendingAction === "bet"
+            ? t("aviator.placingBet")
+            : pendingAction === "cashout"
+              ? t("aviator.cashingOut")
+              : canCashOut && potential != null
+                ? t("aviator.cashOutAmount", { amount: potential.toFixed(2) })
+                : label}
+        </span>
       </button>
     </div>
   );

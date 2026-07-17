@@ -174,7 +174,10 @@ class ConnectionManager:
         payload = json.dumps(message)
 
         results = await asyncio.gather(
-            *(conn.websocket.send_text(payload) for conn in connections),
+            *(
+                asyncio.wait_for(conn.websocket.send_text(payload), timeout=2.0)
+                for conn in connections
+            ),
             return_exceptions=True,
         )
 

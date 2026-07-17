@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import { AlertCircle, Loader2 } from "lucide-react";
+import { useI18n } from "../../i18n";
 import { useBingoRoom } from "../../hooks/useBingoRoom";
 import { findOrCreateRoom } from "../../services/bingo";
 import { getMe } from "../../services/auth";
@@ -14,8 +15,7 @@ import { WinnerOverlay } from "./WinnerOverlay";
 import { ProfileHub } from "./ProfileHub";
 import { HomeView } from "./HomeView";
 import { NetworkAlert } from "./NetworkAlert";
-import { DamaGame } from "../dama/DamaGame";
-import { AviatorGame } from "../aviator/AviatorGame";
+import { getAdminMe } from "../../services/admin";
 import {
   BINGO_AUDIO_SRC,
   NEW_GAME_AUDIO_SRC,
@@ -25,7 +25,37 @@ import {
   preloadEventSounds,
   stopGameAudio,
 } from "../../utils/gameAudio";
+import {
+  launchGameToTab,
+  readTelegramLaunch,
+} from "../../utils/telegramLaunch";
 import type { RoomStatus } from "../../types/bingo";
+
+const AdminDashboard = lazy(() =>
+  import("../admin/AdminDashboard").then((m) => ({ default: m.AdminDashboard })),
+);
+const DamaGame = lazy(() =>
+  import("../dama/DamaGame").then((m) => ({ default: m.DamaGame })),
+);
+const AviatorGame = lazy(() =>
+  import("../aviator/AviatorGame").then((m) => ({ default: m.AviatorGame })),
+);
+const PlinkoGame = lazy(() =>
+  import("../plinko/PlinkoGame").then((m) => ({ default: m.PlinkoGame })),
+);
+const LottoSpinGame = lazy(() =>
+  import("../lotto/LottoSpinGame").then((m) => ({ default: m.LottoSpinGame })),
+);
+
+type KeepAliveGame = "dama" | "aviator" | "plinko" | "lotto";
+
+function GameChunkFallback() {
+  return (
+    <div className="flex flex-1 items-center justify-center p-10">
+      <Loader2 className="animate-spin text-violet-600" aria-label="Loading" />
+    </div>
+  );
+}
 
 interface BingoGameProps {
   userId: string;
@@ -55,14 +85,63 @@ export default function BingoGame({
   accessToken,
   onExit,
 }: BingoGameProps) {
+  const { t } = useI18n();
+  const translateRef = useRef(t);
+  translateRef.current = t;
   const [roomId, setRoomId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tab, setTab] = useState<NavTab>("home");
+  const [isAdmin, setIsAdmin] = useState(false);
+  const [mountedGames, setMountedGames] = useState<Partial<Record<KeepAliveGame, true>>>({});
   const [soundOn, setSoundOn] = useState(true);
   const [audioBlocked, setAudioBlocked] = useState(false);
   const [audioRetryToken, setAudioRetryToken] = useState(0);
   const [autoOn, setAutoOn] = useState(true);
   const [showWinnerDialog, setShowWinnerDialog] = useState(false);
+  const deepLinkConsumed = useRef(false);
+  const adminDeepLinkRequested = useRef(false);
+
+  // Open a specific game once when launched via bot deep link / start_param.
+  useEffect(() => {
+    if (deepLinkConsumed.current) return;
+    deepLinkConsumed.current = true;
+    const { game } = readTelegramLaunch();
+    if (game === "admin") adminDeepLinkRequested.current = true;
+    else if (game) setTab(launchGameToTab(game));
+  }, []);
+
+  // Navigation capability comes only from the server-authorized endpoint.
+  useEffect(() => {
+    let active = true;
+    getAdminMe()
+      .then((capability) => {
+        if (!active) return;
+        setIsAdmin(capability.is_admin);
+        if (adminDeepLinkRequested.current) {
+          setTab(capability.is_admin ? "admin" : "home");
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setIsAdmin(false);
+          if (adminDeepLinkRequested.current) setTab("home");
+        }
+      });
+    return () => { active = false; };
+  }, [accessToken]);
+
+  // Mount heavy game chunks once on first visit; keep them hidden (WS keep-alive).
+  if (
+    (tab === "dama" || tab === "aviator" || tab === "plinko" || tab === "lotto") &&
+    !mountedGames[tab]
+  ) {
+    setMountedGames((prev) => (prev[tab] ? prev : { ...prev, [tab]: true }));
+  }
+
+  const handleAdminAccessDenied = useCallback(() => {
+    setIsAdmin(false);
+    setTab("home");
+  }, []);
 
   // Lobby/Wallet/Profile always show THIS user's Postgres balance from
   // `/api/auth/me`. Redis `player_balance` is only a game-side cache and must
@@ -92,7 +171,7 @@ export default function BingoGame({
         if (!cancelled) setRoomId(room.room_id);
       })
       .catch(() => {
-        if (!cancelled) setLoadError("Could not reach the Bingo server. Please try again.");
+        if (!cancelled) setLoadError(translateRef.current("bingo.loadError"));
       });
 
     return () => {
@@ -269,8 +348,8 @@ export default function BingoGame({
       if (balance < price) {
         showToast(
           balance <= 0
-            ? "Insufficient balance — deposit to pick a board."
-            : `Insufficient balance — stake is ${price} ETB per board.`,
+            ? t("bingo.insufficientDeposit")
+            : t("bingo.insufficientStake", { price }),
         );
         return;
       }
@@ -278,14 +357,14 @@ export default function BingoGame({
       if (balance < nextCost) {
         const affordable = Math.floor(balance / price);
         showToast(
-          `Insufficient balance — you can only afford ${affordable} board(s).`,
+          t("bingo.insufficientAfford", { count: affordable }),
         );
         return;
       }
 
       selectBoard(boardId);
     },
-    [roomState, walletBalance, selectBoard, deselectBoard, showToast],
+    [roomState, walletBalance, selectBoard, deselectBoard, showToast, t],
   );
 
   if (loadError) {
@@ -304,7 +383,7 @@ export default function BingoGame({
       <Shell onExit={onExit}>
         <div className="flex flex-1 flex-col items-center justify-center gap-3 text-purple-500">
           <Loader2 size={32} className="animate-spin" />
-          <p className="text-sm">Connecting to the Bingo room…</p>
+          <p className="text-sm">{t("loading.subtitle")}</p>
         </div>
       </Shell>
     );
@@ -403,39 +482,86 @@ export default function BingoGame({
             </div>
           ))}
 
-        <div
-          className={
-            tab === "dama"
-              ? "flex min-h-0 flex-1 flex-col overflow-hidden"
-              : "hidden"
-          }
-        >
-          <DamaGame
-            accessToken={accessToken}
-            userId={userId}
-            firstName={firstName}
-            walletBalance={walletBalance}
-            onBalanceChange={setWalletBalance}
-            isActive={tab === "dama"}
-          />
-        </div>
+        {mountedGames.dama && (
+          <div
+            className={
+              tab === "dama"
+                ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+                : "hidden"
+            }
+          >
+            <Suspense fallback={<GameChunkFallback />}>
+              <DamaGame
+                accessToken={accessToken}
+                userId={userId}
+                firstName={firstName}
+                walletBalance={walletBalance}
+                onBalanceChange={setWalletBalance}
+                isActive={tab === "dama"}
+              />
+            </Suspense>
+          </div>
+        )}
 
-        <div
-          className={
-            tab === "aviator"
-              ? "flex min-h-0 flex-1 flex-col overflow-hidden"
-              : "hidden"
-          }
-        >
-          <AviatorGame
-            accessToken={accessToken}
-            userId={userId}
-            firstName={firstName}
-            walletBalance={walletBalance}
-            onBalanceChange={setWalletBalance}
-            isActive={tab === "aviator"}
-          />
-        </div>
+        {mountedGames.aviator && (
+          <div
+            className={
+              tab === "aviator"
+                ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+                : "hidden"
+            }
+          >
+            <Suspense fallback={<GameChunkFallback />}>
+              <AviatorGame
+                accessToken={accessToken}
+                userId={userId}
+                firstName={firstName}
+                walletBalance={walletBalance}
+                onBalanceChange={setWalletBalance}
+                isActive={tab === "aviator"}
+              />
+            </Suspense>
+          </div>
+        )}
+
+        {mountedGames.plinko && (
+          <div
+            className={
+              tab === "plinko"
+                ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+                : "hidden"
+            }
+          >
+            <Suspense fallback={<GameChunkFallback />}>
+              <PlinkoGame
+                walletBalance={walletBalance}
+                onBalanceChange={setWalletBalance}
+                isActive={tab === "plinko"}
+              />
+            </Suspense>
+          </div>
+        )}
+
+        {mountedGames.lotto && (
+          <div
+            className={
+              tab === "lotto"
+                ? "flex min-h-0 flex-1 flex-col overflow-hidden"
+                : "hidden"
+            }
+          >
+            <Suspense fallback={<GameChunkFallback />}>
+              <LottoSpinGame
+                accessToken={accessToken}
+                userId={userId}
+                firstName={firstName}
+                walletBalance={walletBalance}
+                onBalanceChange={setWalletBalance}
+                isActive={tab === "lotto"}
+              />
+            </Suspense>
+          </div>
+        )}
 
         {tab === "profile" && (
           <div className="flex-1 overflow-y-auto">
@@ -446,9 +572,17 @@ export default function BingoGame({
             />
           </div>
         )}
+
+        {tab === "admin" && isAdmin && (
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+            <Suspense fallback={<GameChunkFallback />}>
+              <AdminDashboard onAccessDenied={handleAdminAccessDenied} />
+            </Suspense>
+          </div>
+        )}
       </div>
 
-      <BottomNav active={tab} onChange={setTab} bingoLive={inGame} />
+      <BottomNav active={tab} onChange={setTab} bingoLive={inGame} isAdmin={isAdmin} />
 
       {onBingoTab && showWinnerDialog && gameOver && (
         <WinnerOverlay

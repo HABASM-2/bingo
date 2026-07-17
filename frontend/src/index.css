@@ -18,6 +18,16 @@ body {
   transition: background-color 0.25s ease, color 0.25s ease;
 }
 
+/* Ethiopic-capable fallbacks when UI language is Amharic */
+html[lang="am"] body,
+html[lang="am"] button,
+html[lang="am"] input,
+html[lang="am"] textarea,
+html[lang="am"] select {
+  font-family: "Noto Sans Ethiopic", "Nyala", "Abyssinica SIL", Inter, system-ui, sans-serif;
+  line-height: 1.35;
+}
+
 html[data-theme="dark"] body {
   background: #14121f;
   color: #f3eefc;

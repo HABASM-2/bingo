@@ -51,7 +51,7 @@ async def dama_ws(websocket: WebSocket, token: str | None = None):
         await websocket.close(code=4401)
         return
 
-    user = _authenticate(token)
+    user = await asyncio.to_thread(_authenticate, token)
     if user is None:
         await websocket.close(code=4401)
         return

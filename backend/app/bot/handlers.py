@@ -1,322 +1,240 @@
+"""Telegram bot command and callback handlers."""
+
+from __future__ import annotations
+
+import uuid
 from datetime import datetime
 from decimal import Decimal
-from pathlib import Path
 
+from sqlalchemy.exc import SQLAlchemyError
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from app.db.database import SessionLocal
-from app.services.auth_service import AuthService
-from app.models.wallet_transaction import Deposit
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
-from app.models.user import User
+from app.bot.helpers import persist_lang, resolve_lang
+from app.bot.i18n import GAME_TITLES, t
+from app.bot.keyboards import (
+    confirm_cancel_keyboard,
+    deposit_menu_keyboard,
+    deposit_method_keyboard,
+    games_keyboard,
+    home_keyboard,
+    language_keyboard,
+    main_menu_keyboard,
+    open_game_keyboard,
+    support_keyboard,
+)
 from app.core.config import settings
-from app.services.sms_parser import SMSParser
 from app.db.database import SessionLocal
-from app.models.sms_transaction import SMSTransaction
 from app.models.request_tr import TransferRequest, WithdrawRequest
-from sqlalchemy.exc import SQLAlchemyError
-import uuid
-
-logo = Path("assets/logo.png")
-
-
-HOME_KEYBOARD = InlineKeyboardMarkup([
-    [
-        InlineKeyboardButton(
-            "🔙 Home",
-            callback_data="home",
-        )
-    ]
-])
-
+from app.models.sms_transaction import SMSTransaction
+from app.models.user import User
+from app.models.wallet_transaction import Deposit
+from app.services.auth_service import AuthService
+from app.services.sms_parser import SMSParser
 
 DEPOSIT_METHODS = {
     "telebirr": {
-        "title": "🟢 Telebirr Deposit",
+        "title_key": "deposit.title.telebirr",
         "account_name": "Telegram Games",
         "account_number": "0912345678",
-        "button_callback": "deposit_paid",
     },
     "cbe": {
-        "title": "🏦 CBE Deposit",
+        "title_key": "deposit.title.cbe",
         "account_name": "Telegram Games",
         "account_number": "1000123456789",
-        "button_callback": "deposit_paid",
     },
     "cbebirr": {
-        "title": "📱 CBE Birr Deposit",
+        "title_key": "deposit.title.cbebirr",
         "account_name": "Telegram Games",
         "account_number": "0911111111",
-        "button_callback": "deposit_paid",
     },
     "boa": {
-        "title": "🏛️ Bank of Abyssinia Deposit",
+        "title_key": "deposit.title.boa",
         "account_name": "Telegram Games",
         "account_number": "1234567890",
-        "button_callback": "deposit_paid",
     },
 }
 
-def main_menu_keyboard():
-    return [
-        [
-            InlineKeyboardButton(
-                "🎮 Play",
-                web_app=WebAppInfo(
-                    url=settings.TELEGRAM_WEBAPP_URL
-                ),
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📝 Register",
-                callback_data="register",
-            ),
-            InlineKeyboardButton(
-                "💰 Check Balance",
-                callback_data="balance",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "💳 Deposit",
-                callback_data="deposit",
-            ),
-            InlineKeyboardButton(
-                "💸 Withdraw",
-                callback_data="withdraw",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🔄 Transfer",
-                callback_data="transfer",
-            ),
-            InlineKeyboardButton(
-                "🎁 Convert Bonus",
-                callback_data="bonus",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "👥 Invite",
-                callback_data="invite",
-            ),
-            InlineKeyboardButton(
-                "📖 Instructions",
-                callback_data="instruction",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🎧 Contact Support",
-                callback_data="support",
-            )
-        ],
-    ]
+async def _answer(query) -> None:
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
-async def send_main_menu(message, first_name: str):
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "🎮 Play",
-                web_app=WebAppInfo(
-                    url=settings.TELEGRAM_WEBAPP_URL
-                ),
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📝 Register",
-                callback_data="register",
-            ),
-            InlineKeyboardButton(
-                "💰 Check Balance",
-                callback_data="balance",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "💳 Deposit",
-                callback_data="deposit",
-            ),
-            InlineKeyboardButton(
-                "💸 Withdraw",
-                callback_data="withdraw",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🔄 Transfer",
-                callback_data="transfer",
-            ),
-            InlineKeyboardButton(
-                "🎁 Convert Bonus",
-                callback_data="bonus",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "👥 Invite",
-                callback_data="invite",
-            ),
-            InlineKeyboardButton(
-                "📖 Instructions",
-                callback_data="instruction",
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🎧 Contact Support",
-                callback_data="support",
-            )
-        ],
-    ]
 
-    await message.reply_text(
-        "Choose an option below: ",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
+async def _edit_or_reply(query, text: str, reply_markup=None) -> None:
+    try:
+        await query.edit_message_text(
+            text=text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
+    except Exception:
+        await query.message.reply_text(
+            text,
+            parse_mode="HTML",
+            reply_markup=reply_markup,
+        )
 
-async def home_menu(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-    query = update.callback_query
-    await query.answer()
 
-    await query.edit_message_text(
-        text="🏠 <b>Main Menu</b>\n\nChoose an option:",
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(main_menu_keyboard()),
-    )
-    
-async def start_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+# ── Menu / navigation ───────────────────────────────────────────────
+
+
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-
     referred = False
-
     if context.args:
         context.user_data["referral_code"] = context.args[0]
         referred = True
 
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                text="🎮 Play",
-                web_app=WebAppInfo(
-                    url=settings.TELEGRAM_WEBAPP_URL
-                )
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📝 Register",
-                callback_data="register"
-            ),
-            InlineKeyboardButton(
-                "💰 Check Balance",
-                callback_data="balance"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "💳 Deposit",
-                callback_data="deposit"
-            ),
-            InlineKeyboardButton(
-                "💸 Withdraw",
-                callback_data="withdraw"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🔄 Transfer",
-                callback_data="transfer"
-            ),
-            InlineKeyboardButton(
-                "🎁 Convert Bonus",
-                callback_data="bonus"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "👥 Invite",
-                callback_data="invite"
-            ),
-            InlineKeyboardButton(
-                "📖 Instructions",
-                callback_data="instruction"
-            ),
-        ],
-        [
-            InlineKeyboardButton(
-                "🎧 Contact Support",
-                callback_data="support"
-            )
-        ],
-    ]
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
+    lang = resolve_lang(update, context)
+    referral = t(lang, "welcome.referral") if referred else ""
+    text = t(
+        lang,
+        "welcome",
+        name=user.first_name if user else "",
+        referral=referral,
+    )
     await update.message.reply_text(
-        text=(
-            f"👋 <b>Welcome, {user.first_name}!</b>\n\n"
-            "🎮 <b>Telegram Games</b>\n\n"
-            "Play exciting games, compete with friends, and enjoy a fun gaming experience.\n\n"
-            +
-            (
-                "🎁 <b>You joined through an invitation link!</b>\n"
-                "Register now and receive your welcome bonus.\n\n"
-                if referred
-                else ""
-            )
-            +
-            "To get started, please choose an option from the menu below."
-        ),
+        text,
         parse_mode="HTML",
-        reply_markup=reply_markup,
+        reply_markup=main_menu_keyboard(lang),
     )
 
-async def check_balance(
+
+async def home_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await _answer(query)
+    lang = resolve_lang(update, context)
+    await _edit_or_reply(
+        query,
+        t(lang, "menu.home"),
+        main_menu_keyboard(lang),
+    )
+
+
+async def games_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    if query:
+        await _answer(query)
+    lang = resolve_lang(update, context)
+    text = t(lang, "menu.games")
+    markup = games_keyboard(lang)
+    if query:
+        await _edit_or_reply(query, text, markup)
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+async def play_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await games_menu(update, context)
+
+
+async def games_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await games_menu(update, context)
+
+
+async def open_game_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
+    game: str,
 ):
+    lang = resolve_lang(update, context)
+    title = GAME_TITLES.get(game, game.title())
+    text = t(
+        lang,
+        "open.game",
+        title=title,
+        blurb=t(lang, f"game.{game}.blurb"),
+    )
+    await update.message.reply_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=open_game_keyboard(lang, game),
+    )
 
+
+async def bingo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await open_game_command(update, context, "bingo")
+
+
+async def dama_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await open_game_command(update, context, "dama")
+
+
+async def aviator_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await open_game_command(update, context, "aviator")
+
+
+async def plinko_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await open_game_command(update, context, "plinko")
+
+
+async def lotto_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await open_game_command(update, context, "lotto")
+
+
+async def help_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = resolve_lang(update, context)
+    text = t(lang, "help")
+    markup = home_keyboard(lang)
     query = update.callback_query
-    await query.answer()
+    if query:
+        await _answer(query)
+        await _edit_or_reply(query, text, markup)
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
 
+
+async def language_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = resolve_lang(update, context)
+    text = t(
+        lang,
+        "language.prompt",
+        current=t(lang, f"language.label.{lang}"),
+    )
+    markup = language_keyboard(lang)
+    query = update.callback_query
+    if query:
+        await _answer(query)
+        await _edit_or_reply(query, text, markup)
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+
+
+async def language_set(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await _answer(query)
+    choice = "en" if query.data == "lang_en" else "am"
+    lang = persist_lang(update, context, choice)
+    await _edit_or_reply(
+        query,
+        t(lang, "language.changed", label=t(lang, f"language.label.{lang}")),
+        main_menu_keyboard(lang),
+    )
+
+
+# ── Balance / register / invite / support ────────────────────────────
+
+
+async def check_balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = resolve_lang(update, context)
+    query = update.callback_query
+    if query:
+        await _answer(query)
 
     telegram_id = update.effective_user.id
-
-
     db = SessionLocal()
-
     try:
-
-        user = (
-            db.query(User)
-            .filter(
-                User.telegram_id == telegram_id
-            )
-            .first()
-        )
-
-
+        user = db.query(User).filter(User.telegram_id == telegram_id).first()
         if not user:
-
-            await query.message.reply_text(
-                "❌ User account not found."
-            )
-
+            text = t(lang, "err.user_not_found")
+            markup = home_keyboard(lang)
+            if query:
+                await query.message.reply_text(text, reply_markup=markup)
+            else:
+                await update.message.reply_text(text, reply_markup=markup)
             return
-
-
-        balance = user.balance or 0
 
         pending = (
             db.query(WithdrawRequest)
@@ -326,127 +244,182 @@ async def check_balance(
             )
             .first()
         )
-
-
-        message = f"""
-        💰 <b>Your Balance</b>
-
-        <b>{balance} ETB</b>
-        """
-
+        pending_text = ""
         if pending:
-            message += f"""
-
-        ──────────────────
-
-        ⏳ <b>Pending Withdrawal</b>
-
-        💰 Amount: <b>{pending.amount} ETB</b>
-        📱 Method: <b>{pending.method}</b>
-        📌 Status: <b>{pending.status.title()}</b>
-        """
-
-        message += """
-
-        🎮 Ready to play!
-        """
-
-        await query.message.reply_text(
-            message,
-            parse_mode="HTML",
-            reply_markup=HOME_KEYBOARD,
+            pending_text = t(
+                lang,
+                "balance.pending",
+                amount=pending.amount,
+                method=pending.method,
+                status=pending.status.title(),
+            )
+        text = t(
+            lang,
+            "balance",
+            balance=user.balance or 0,
+            pending=pending_text,
         )
-
-
+        markup = home_keyboard(lang)
+        if query:
+            await query.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+        else:
+            await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
     finally:
-
         db.close()
 
-async def register_command(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+
+async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await check_balance(update, context)
+
+
+async def register_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-
-    telegram_user = query.from_user
-
+    await _answer(query)
+    lang = resolve_lang(update, context)
     db = SessionLocal()
-
     try:
         service = AuthService(db)
-
         user, created, updated_fields, inviter = service.register_telegram_user(
             telegram_user=query.from_user,
-            referral_code=context.user_data.get("referral_code")
+            referral_code=context.user_data.get("referral_code"),
         )
-
+        # Keep bot-chosen language if the user picked one before registering.
+        session_lang = context.user_data.get("lang")
+        if session_lang in {"en", "am"} and user.language_code != session_lang:
+            user.language_code = session_lang
+            db.commit()
+            db.refresh(user)
+        lang = session_lang if session_lang in {"en", "am"} else resolve_lang(update, context)
         if not created:
-
             if updated_fields:
                 await query.message.reply_text(
-                    "🔄 <b>Profile Updated</b>\n\n"
-                    "Your Telegram information has been synchronized:\n\n"
-                    + "\n".join(
-                        f"✅ {field}"
-                        for field in updated_fields
+                    t(
+                        lang,
+                        "register.updated",
+                        fields="\n".join(f"• {field}" for field in updated_fields),
                     ),
                     parse_mode="HTML",
-                    reply_markup=HOME_KEYBOARD,
+                    reply_markup=home_keyboard(lang),
                 )
-
             else:
                 await query.message.reply_text(
-                    "✅ You are already registered.\n\n"
-                    "Your account information is already up to date. ",
-                    reply_markup=HOME_KEYBOARD,
+                    t(lang, "register.already"),
+                    reply_markup=home_keyboard(lang),
                 )
-
             return
 
-        username = (
-            f"@{user.username}"
-            if user.username
-            else "Not set"
-        )
+        username = f"@{user.username}" if user.username else t(lang, "username.not_set")
+        if inviter and inviter.telegram_id:
+            from app.bot.locale import get_user_locale
 
-        if inviter:
-            await context.bot.send_message(
-                chat_id=inviter.telegram_id,
-                text=(
-                    "🎁 <b>Referral Bonus Received!</b>\n\n"
-                    f"Your friend <b>{user.first_name}</b> "
-                    "registered using your invite link.\n\n"
-                    "💰 You received: <b>10 ETB</b>\n\n"
-                    "Keep inviting friends and earn more rewards!"
-                ),
-                parse_mode="HTML",
-            )
+            inviter_lang = get_user_locale(db, inviter.telegram_id) or lang
+            try:
+                await context.bot.send_message(
+                    chat_id=inviter.telegram_id,
+                    text=t(
+                        inviter_lang,
+                        "register.referral_notify",
+                        name=user.first_name,
+                    ),
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
 
         await query.message.reply_text(
-            text=(
-                "🎉 <b>Registration Successful!</b>\n\n"
-                f"👤 <b>Name:</b> {user.first_name}\n"
-                f"📛 <b>Username:</b> {username}\n"
-                f"🆔 <b>Referral Code:</b> <code>{user.referral_code}</code>\n\n"
-                "💰 <b>Welcome Bonus Received:</b> 10 ETB\n\n"
-                "Your account has been created successfully."
+            t(
+                lang,
+                "register.success",
+                name=user.first_name,
+                username=username,
+                code=user.referral_code,
             ),
             parse_mode="HTML",
-            reply_markup=HOME_KEYBOARD,
+            reply_markup=home_keyboard(lang),
         )
-
-        context.user_data.pop(
-            "referral_code",
-            None
-        )
-
+        context.user_data.pop("referral_code", None)
     except Exception:
         db.rollback()
         raise
-
     finally:
         db.close()
+
+
+async def invite_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = resolve_lang(update, context)
+    query = update.callback_query
+    if query:
+        await _answer(query)
+
+    telegram_user = update.effective_user
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.telegram_id == telegram_user.id).first()
+        if not user:
+            text = t(lang, "err.not_registered")
+            if query:
+                await query.message.reply_text(text, reply_markup=home_keyboard(lang))
+            else:
+                await update.message.reply_text(text, reply_markup=home_keyboard(lang))
+            return
+
+        invite_link = (
+            f"https://t.me/{settings.TELEGRAM_BOT_USERNAME}?start={user.referral_code}"
+        )
+        text = t(lang, "invite", link=invite_link)
+        markup = home_keyboard(lang)
+        if query:
+            await query.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+        else:
+            await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+    finally:
+        db.close()
+
+
+async def invite_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await invite_handler(update, context)
+
+
+async def support_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await _answer(query)
+    lang = resolve_lang(update, context)
+    await query.message.reply_text(
+        t(lang, "support"),
+        parse_mode="HTML",
+        reply_markup=support_keyboard(lang),
+    )
+
+
+async def instruction_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Legacy Instructions button → help."""
+    await help_handler(update, context)
+
+
+# ── Deposit ──────────────────────────────────────────────────────────
+
+
+async def deposit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = resolve_lang(update, context)
+    query = update.callback_query
+    if query:
+        await _answer(query)
+        await _edit_or_reply(
+            query,
+            t(lang, "deposit.menu"),
+            deposit_menu_keyboard(lang),
+        )
+    else:
+        await update.message.reply_text(
+            t(lang, "deposit.menu"),
+            parse_mode="HTML",
+            reply_markup=deposit_menu_keyboard(lang),
+        )
+
+
+async def deposit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await deposit_menu(update, context)
+
 
 async def show_deposit_method(
     update: Update,
@@ -454,1007 +427,399 @@ async def show_deposit_method(
     method: str,
 ):
     query = update.callback_query
-    await query.answer()
-
+    await _answer(query)
+    lang = resolve_lang(update, context)
     payment = DEPOSIT_METHODS[method]
-
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "✅ I've Paid",
-                callback_data=payment["button_callback"],
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🔙 Back",
-                callback_data="deposit",
-            )
-        ],
-    ]
-
     await query.edit_message_text(
-        text=(
-            f"{payment['title']}\n\n"
-
-            f"👤 <b>Account Name</b>\n"
-            f"{payment['account_name']}\n\n"
-
-            f"💳 <b>Account / Phone Number</b>\n"
-            f"<code>{payment['account_number']}</code>\n\n"
-
-            "💰 <b>Minimum Deposit</b>\n"
-            "10 ETB\n\n"
-
-            "📌 <b>Instructions</b>\n"
-            "1. Send money to the account above.\n"
-            "2. Save the payment confirmation SMS.\n"
-            "3. Press <b>I've Paid</b>.\n"
-            "4. Forward the payment SMS to this bot."
+        text=t(
+            lang,
+            "deposit.method",
+            title=t(lang, payment["title_key"]),
+            account_name=payment["account_name"],
+            account_number=payment["account_number"],
         ),
         parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=deposit_method_keyboard(lang),
     )
+
 
 async def deposit_telebirr(update, context):
     await show_deposit_method(update, context, "telebirr")
 
-async def invite_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.callback_query
-    await query.answer()
-
-    telegram_user = query.from_user
-
-    db = SessionLocal()
-
-    try:
-
-        user = (
-            db.query(User)
-            .filter(
-                User.telegram_id == telegram_user.id
-            )
-            .first()
-        )
-
-
-        if not user:
-
-            await query.message.reply_text(
-                "❌ Please register first."
-            )
-            return
-
-
-        invite_link = (
-            f"https://t.me/"
-            f"{settings.TELEGRAM_BOT_USERNAME}"
-            f"?start={user.referral_code}"
-        )
-
-
-        await query.message.reply_text(
-            f"""
-            👥 <b>Invite Friends</b>
-
-            Share your invitation link:
-
-            🔗 <code>{invite_link}</code>
-
-
-            🎁 Rewards:
-
-            ✅ Your friend gets 10 ETB welcome bonus
-
-            ✅ You get 10 ETB referral bonus
-
-
-            Invite more friends and earn more!
-                        """,
-            parse_mode="HTML",
-            reply_markup=HOME_KEYBOARD,
-            
-        )
-
-
-    finally:
-
-        db.close()
 
 async def deposit_cbe(update, context):
     await show_deposit_method(update, context, "cbe")
 
-async def instruction_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.callback_query
-    await query.answer()
-
-    await query.message.reply_text(
-        """
-📖 <b>How to Play</b>
-
-🎮 <b>Getting Started</b>
-
-1️⃣ Register your account.
-2️⃣ Deposit funds into your wallet.
-3️⃣ Press <b>🎮 Play</b>.
-4️⃣ Join your preferred game.
-5️⃣ Win and receive rewards automatically.
-
-━━━━━━━━━━━━━━━
-
-💳 <b>Deposits</b>
-
-• Minimum Deposit: <b>10 ETB</b>
-• Supported Method: <b>Telebirr</b>
-
-━━━━━━━━━━━━━━━
-
-💸 <b>Withdrawals</b>
-
-• Minimum Withdrawal: <b>100 ETB</b>
-• Requests are reviewed by the admin.
-• Funds are sent after approval.
-
-━━━━━━━━━━━━━━━
-
-👥 <b>Referral Rewards</b>
-
-• Invite friends using your referral link.
-• Your friend receives <b>10 ETB</b>.
-• You receive <b>10 ETB</b> for every successful registration.
-
-━━━━━━━━━━━━━━━
-
-⚠️ <b>Important</b>
-
-• Never share your Telegram account.
-• Make sure payment details are correct.
-• Contact support if you need assistance.
-
-Good luck and enjoy playing! 🎉
-        """,
-        parse_mode="HTML",
-        reply_markup=HOME_KEYBOARD,
-    )
 
 async def deposit_cbebirr(update, context):
     await show_deposit_method(update, context, "cbebirr")
 
-async def support_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.callback_query
-    await query.answer()
-
-    keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "💬 Contact Support",
-                    url="https://t.me/TelegramGamesSupport",
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🔙 Back",
-                    callback_data="home",
-                )
-            ],
-        ]
-    )
-
-    await query.message.reply_text(
-        """
-🎧 <b>Customer Support</b>
-
-Need help?
-
-Our support team can assist you with:
-
-💳 Deposit issues
-💸 Withdrawal issues
-🎮 Game issues
-👤 Account problems
-❓ General questions
-
-Click the button below to contact support.
-        """,
-        parse_mode="HTML",
-        reply_markup=keyboard,
-    )
 
 async def deposit_boa(update, context):
     await show_deposit_method(update, context, "boa")
-    
-async def deposit_menu(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
 
+
+async def deposit_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
+    await _answer(query)
+    lang = resolve_lang(update, context)
+    context.user_data["waiting_deposit"] = True
+    db = SessionLocal()
+    try:
+        user = (
+            db.query(User)
+            .filter(User.telegram_id == update.effective_user.id)
+            .first()
+        )
+        if not user:
+            await query.message.reply_text(
+                t(lang, "err.user_not_found"),
+                reply_markup=home_keyboard(lang),
+            )
+            return
+        await query.message.reply_text(
+            t(lang, "deposit.forward_sms"),
+            reply_markup=home_keyboard(lang),
+        )
+    finally:
+        db.close()
 
-    keyboard = [
-        [
-            InlineKeyboardButton(
-                "🟢 Telebirr",
-                callback_data="deposit_telebirr",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🏦 CBE",
-                callback_data="deposit_cbe",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "📱 CBE Birr",
-                callback_data="deposit_cbebirr",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🏛️ Bank of Abyssinia",
-                callback_data="deposit_boa",
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "🔙 Back",
-                callback_data="home",
-            )
-        ],
-    ]
 
-    await query.edit_message_text(
-        text=(
-            "💳 <b>Deposit</b>\n\n"
-            "Choose your preferred payment method."
-        ),
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
+async def forwarded_sms_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not context.user_data.get("waiting_deposit"):
+        return
 
-async def transfer_start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
+    lang = resolve_lang(update, context)
+    text = update.message.text
+    data = SMSParser.parse(text)
+    tx_id = data["transaction_id"]
+    if not tx_id:
+        await update.message.reply_text(
+            t(lang, "deposit.invalid_sms"),
+            reply_markup=home_keyboard(lang),
+        )
+        return
 
+    db = SessionLocal()
+    try:
+        sms = (
+            db.query(SMSTransaction)
+            .filter(SMSTransaction.transaction_id == tx_id)
+            .first()
+        )
+        if not sms:
+            await update.message.reply_text(
+                t(lang, "deposit.tx_not_found"),
+                reply_markup=home_keyboard(lang),
+            )
+            return
+        if sms.is_used:
+            await update.message.reply_text(
+                t(lang, "deposit.tx_used"),
+                reply_markup=home_keyboard(lang),
+            )
+            return
+
+        user = (
+            db.query(User)
+            .filter(User.telegram_id == update.effective_user.id)
+            .first()
+        )
+        if not user:
+            await update.message.reply_text(
+                t(lang, "err.user_not_found"),
+                reply_markup=home_keyboard(lang),
+            )
+            return
+
+        user.balance += sms.amount
+        db.add(
+            Deposit(
+                user_id=user.id,
+                amount=sms.amount,
+                method="telebirr",
+                sms_transaction_id=sms.transaction_id,
+            )
+        )
+        sms.is_used = True
+        sms.used_at = datetime.utcnow()
+        db.commit()
+        context.user_data["waiting_deposit"] = False
+        await update.message.reply_text(
+            t(lang, "deposit.success", amount=sms.amount, tx=sms.transaction_id),
+            parse_mode="HTML",
+            reply_markup=home_keyboard(lang),
+        )
+    finally:
+        db.close()
+
+
+# ── Transfer ─────────────────────────────────────────────────────────
+
+
+async def transfer_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-
-
+    await _answer(query)
+    lang = resolve_lang(update, context)
     context.user_data.clear()
-
+    context.user_data["lang"] = lang
     context.user_data["transfer_step"] = "username"
-
-
     await query.message.reply_text(
-        "👤 Enter receiver Telegram username\n\n"
-        "Example:\n"
-        "@habitamu",
-        reply_markup=HOME_KEYBOARD,
+        t(lang, "transfer.ask_user"),
+        reply_markup=home_keyboard(lang),
     )
 
-async def transfer_input(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
 
-    # =====================
-    # DEPOSIT SMS
-    # =====================
-
+async def transfer_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("waiting_deposit"):
         await forwarded_sms_handler(update, context)
         return
 
-
+    lang = resolve_lang(update, context)
     text = update.message.text.strip()
-
     step = context.user_data.get("transfer_step")
-
     withdraw_step = context.user_data.get("withdraw_step")
 
     if withdraw_step == "account_name":
-
         context.user_data["withdraw"]["account_name"] = text
-
         context.user_data["withdraw_step"] = "account_number"
-
-        await update.message.reply_text(
-            "📱 Enter your account/phone number."
-        )
-
+        await update.message.reply_text(t(lang, "withdraw.ask_number"))
         return
 
-    elif withdraw_step == "account_number":
-
+    if withdraw_step == "account_number":
         context.user_data["withdraw"]["account_number"] = text
-
         context.user_data["withdraw_step"] = "amount"
-
         await update.message.reply_text(
-            "💰 Enter withdrawal amount.\n\nMinimum: 100 ETB"
+            t(lang, "withdraw.ask_amount"),
+            parse_mode="HTML",
         )
-
         return
 
-    elif withdraw_step == "amount":
-
+    if withdraw_step == "amount":
         try:
             amount = Decimal(text)
-
-        except:
-            await update.message.reply_text(
-                "❌ Invalid amount."
-            )
+        except Exception:
+            await update.message.reply_text(t(lang, "transfer.invalid_amount"))
             return
 
         if amount < Decimal("100"):
-            await update.message.reply_text(
-                "❌ Minimum withdrawal amount is 100 ETB."
-            )
+            await update.message.reply_text(t(lang, "withdraw.min"))
             return
 
         db = SessionLocal()
-
         try:
             user = (
                 db.query(User)
-                .filter(
-                    User.telegram_id == update.effective_user.id
-                )
+                .filter(User.telegram_id == update.effective_user.id)
                 .first()
             )
-
             if not user:
-                await update.message.reply_text(
-                    "❌ Please register first."
-                )
+                await update.message.reply_text(t(lang, "err.not_registered"))
                 return
-
             if amount > user.balance:
                 await update.message.reply_text(
-                    f"❌ Insufficient balance.\n\n"
-                    f"Available: {user.balance} ETB"
+                    t(lang, "withdraw.insufficient", balance=user.balance)
                 )
                 return
-
         finally:
             db.close()
 
         context.user_data["withdraw"]["amount"] = amount
-
-        keyboard = InlineKeyboardMarkup(
-            [
-                [
-                    InlineKeyboardButton(
-                        "✅ Confirm",
-                        callback_data="confirm_withdraw",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        "❌ Cancel",
-                        callback_data="cancel_withdraw",
-                    )
-                ],
-            ]
-        )
-
-        await update.message.reply_text(
-            f"""
-    💸 <b>Confirm Withdrawal</b>
-
-    🏦 Method:
-    {context.user_data["withdraw"]["method"]}
-
-    👤 Account Name:
-    {context.user_data["withdraw"]["account_name"]}
-
-    📱 Account Number:
-    {context.user_data["withdraw"]["account_number"]}
-
-    💰 Amount:
-    {amount} ETB
-            """,
-            parse_mode="HTML",
-            reply_markup=keyboard,
-        )
-
-        # Put it HERE
         context.user_data["withdraw_step"] = "confirm"
-
+        await update.message.reply_text(
+            t(
+                lang,
+                "withdraw.confirm",
+                method=context.user_data["withdraw"]["method"],
+                name=context.user_data["withdraw"]["account_name"],
+                number=context.user_data["withdraw"]["account_number"],
+                amount=amount,
+            ),
+            parse_mode="HTML",
+            reply_markup=confirm_cancel_keyboard(
+                lang,
+                confirm_data="confirm_withdraw",
+                cancel_data="cancel_withdraw",
+            ),
+        )
         return
 
-    # =====================
-    # STEP 1: USERNAME
-    # =====================
-
     if step == "username":
-
         username = text.replace("@", "")
-
         db = SessionLocal()
-
         try:
-
-            receiver = (
-                db.query(User)
-                .filter(User.username == username)
-                .first()
-            )
-
+            receiver = db.query(User).filter(User.username == username).first()
             if not receiver:
                 await update.message.reply_text(
-                    "❌ User not found", 
-                    reply_markup=HOME_KEYBOARD,
+                    t(lang, "transfer.not_found"),
+                    reply_markup=home_keyboard(lang),
                 )
                 return
-
             sender = (
                 db.query(User)
-                .filter(
-                    User.telegram_id == update.effective_user.id
-                )
+                .filter(User.telegram_id == update.effective_user.id)
                 .first()
             )
-
-            if sender.id == receiver.id:
-                await update.message.reply_text(
-                    "❌ Cannot transfer to yourself"
-                )
+            if sender and sender.id == receiver.id:
+                await update.message.reply_text(t(lang, "transfer.self"))
                 return
-
             context.user_data["receiver_id"] = str(receiver.id)
             context.user_data["receiver_username"] = receiver.username
             context.user_data["transfer_step"] = "amount"
-
             await update.message.reply_text(
-                f"✅ Receiver found\n\n"
-                f"👤 @{receiver.username}\n\n"
-                "💰 Enter amount:", 
-                reply_markup=HOME_KEYBOARD,
+                t(lang, "transfer.ask_amount", username=receiver.username),
+                reply_markup=home_keyboard(lang),
             )
-
         finally:
             db.close()
-
         return
 
-
-    # =====================
-    # STEP 2: AMOUNT
-    # =====================
-
-    elif step == "amount":
-
+    if step == "amount":
         try:
             amount = Decimal(text)
-
-        except:
-            await update.message.reply_text(
-                "❌ Invalid amount"
-            )
+        except Exception:
+            await update.message.reply_text(t(lang, "transfer.invalid_amount"))
             return
-
-
         if amount <= 0:
-            await update.message.reply_text(
-                "❌ Amount must be greater than zero"
-            )
+            await update.message.reply_text(t(lang, "transfer.amount_positive"))
             return
-
 
         context.user_data["amount"] = amount
-
-
-        keyboard = [
-            [
-                InlineKeyboardButton(
-                    "✅ Confirm",
-                    callback_data="confirm_transfer"
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "❌ Cancel",
-                    callback_data="cancel_transfer"
-                )
-            ]
-        ]
-
-
-        await update.message.reply_text(
-            f"""
-    💸 <b>Confirm Transfer</b>
-
-    👤 To:
-    @{context.user_data['receiver_username']}
-
-    💰 Amount:
-    {amount} ETB
-            """,
-            parse_mode="HTML",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-
         context.user_data["transfer_step"] = "confirm"
+        await update.message.reply_text(
+            t(
+                lang,
+                "transfer.confirm",
+                username=context.user_data["receiver_username"],
+                amount=amount,
+            ),
+            parse_mode="HTML",
+            reply_markup=confirm_cancel_keyboard(
+                lang,
+                confirm_data="confirm_transfer",
+                cancel_data="cancel_transfer",
+            ),
+        )
 
-        return
 
-async def confirm_transfer(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def confirm_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    lang = resolve_lang(update, context)
 
-
-    await query.answer()
-
-
-    # Prevent old buttons / already processed requests
     if context.user_data.get("transfer_step") != "confirm":
-
-        await query.answer(
-            "⚠️ This transfer has expired.",
-            show_alert=True
-        )
+        await query.answer(t(lang, "transfer.expired"), show_alert=True)
+        return
+    if "receiver_id" not in context.user_data or "amount" not in context.user_data:
+        await query.answer(t(lang, "transfer.missing"), show_alert=True)
         return
 
-
-    # Prevent missing data
-    if (
-        "receiver_id" not in context.user_data
-        or "amount" not in context.user_data
-    ):
-
-        await query.answer(
-            "⚠️ Transfer data missing. Start again.",
-            show_alert=True
-        )
-        return
-
-
-
-    # Lock immediately against double click
+    await _answer(query)
     context.user_data["transfer_step"] = "processing"
-
-
-
     db = SessionLocal()
-
-
     try:
-
         sender = (
-            db.query(User)
-            .filter(
-                User.telegram_id ==
-                query.from_user.id
-            )
-            .first()
+            db.query(User).filter(User.telegram_id == query.from_user.id).first()
         )
-
-
         receiver = (
             db.query(User)
-            .filter(
-                User.id ==
-                context.user_data["receiver_id"]
-            )
+            .filter(User.id == context.user_data["receiver_id"])
             .first()
         )
-
-
         amount = context.user_data["amount"]
-
-
-
         if not sender or not receiver:
-
-            await query.message.reply_text(
-                "❌ User not found."
-            )
-
+            await query.message.reply_text(t(lang, "transfer.not_found"))
             return
-
-
-
         if sender.balance < amount:
-
-            await query.message.reply_text(
-                "❌ Not enough balance."
-            )
-
+            await query.message.reply_text(t(lang, "transfer.insufficient"))
             return
-
-
-
-        # Transfer money
 
         sender.balance -= amount
-
         receiver.balance += amount
-
-
-
-        transfer = TransferRequest(
-            sender_id=sender.id,
-            receiver_id=receiver.id,
-            amount=amount,
-            status="COMPLETED"
+        db.add(
+            TransferRequest(
+                sender_id=sender.id,
+                receiver_id=receiver.id,
+                amount=amount,
+                status="COMPLETED",
+            )
         )
-
-
-        db.add(transfer)
-
         db.commit()
 
-
-
-        # Remove buttons from old message
-
         try:
-            await query.edit_message_reply_markup(
-                reply_markup=None
-            )
-
+            await query.edit_message_reply_markup(reply_markup=None)
         except Exception:
             pass
 
-
-
-        # Notify sender
-
         await query.message.reply_text(
-            f"""
-                ✅ <b>Transfer Completed</b>
-
-
-                💸 Sent:
-                {amount} ETB
-
-
-                👤 To:
-                @{receiver.username}
-
-
-                💰 Remaining Balance:
-                {sender.balance} ETB
-                            """,
-            parse_mode="HTML", 
-            reply_markup=HOME_KEYBOARD,
+            t(
+                lang,
+                "transfer.done",
+                amount=amount,
+                username=receiver.username,
+                balance=sender.balance,
+            ),
+            parse_mode="HTML",
+            reply_markup=home_keyboard(lang),
         )
-
-
-
-        # Notify receiver
 
         try:
-
             await context.bot.send_message(
                 chat_id=receiver.telegram_id,
-
-                text=f"""
-                🎉 <b>You received a transfer</b>
-
-
-                💰 Amount:
-                {amount} ETB
-
-
-                👤 From:
-                @{sender.username or sender.first_name}
-
-
-                💳 New Balance:
-                {receiver.balance} ETB
-                                """,
-
-                parse_mode="HTML", 
-                reply_markup=HOME_KEYBOARD,
+                text=t(
+                    lang,
+                    "transfer.received",
+                    amount=amount,
+                    username=sender.username or sender.first_name,
+                    balance=receiver.balance,
+                ),
+                parse_mode="HTML",
+                reply_markup=home_keyboard(lang),
             )
+        except Exception:
+            pass
 
-
-        except Exception as e:
-
-            print(
-                "Receiver notification failed:",
-                e
-            )
-
-
-
-        # Clear old transfer data
-
-        context.user_data.pop(
-            "receiver_id",
-            None
-        )
-
-        context.user_data.pop(
-            "receiver_username",
-            None
-        )
-
-        context.user_data.pop(
-            "amount",
-            None
-        )
-
-        context.user_data.pop(
-            "transfer_step",
-            None
-        )
-
-
-
-    except SQLAlchemyError as e:
-
+        for key in ("receiver_id", "receiver_username", "amount", "transfer_step"):
+            context.user_data.pop(key, None)
+    except SQLAlchemyError:
         db.rollback()
-
-        print(
-            "Transfer failed:",
-            e
-        )
-
-
         await query.message.reply_text(
-            "❌ Transfer failed. Try again.", 
-            reply_markup=HOME_KEYBOARD,
+            t(lang, "transfer.failed"),
+            reply_markup=home_keyboard(lang),
         )
-
-
-        # allow retry
         context.user_data["transfer_step"] = "confirm"
-
-
-
     finally:
-
         db.close()
 
-async def cancel_transfer(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
 
+async def cancel_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-
-    await query.answer()
-
-
+    await _answer(query)
+    lang = resolve_lang(update, context)
     context.user_data.clear()
-
-
+    context.user_data["lang"] = lang
     await query.message.reply_text(
-        "❌ Transfer cancelled", 
-        reply_markup=HOME_KEYBOARD,
+        t(lang, "transfer.cancelled"),
+        reply_markup=home_keyboard(lang),
     )
 
-async def forwarded_sms_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
 
-    if not context.user_data.get("waiting_deposit"):
-        return
+# ── Withdraw ─────────────────────────────────────────────────────────
 
 
-    text = update.message.text
-
-
-    data = SMSParser.parse(text)
-
-
-    tx_id = data["transaction_id"]
-
-
-    if not tx_id:
-
-        await update.message.reply_text(
-            "❌ Invalid SMS, Please send correctly!",
-            reply_markup=HOME_KEYBOARD,
-        )
-        return
-
-
-    db = SessionLocal()
-
-
-    try:
-
-        sms = (
-            db.query(SMSTransaction)
-            .filter(
-                SMSTransaction.transaction_id == tx_id
-            )
-            .first()
-        )
-
-
-        if not sms:
-
-            await update.message.reply_text(
-                "❌ Transaction not found. "
-                "Please wait a little and try again.", 
-                reply_markup=HOME_KEYBOARD,
-            )
-
-            return
-
-
-
-        if sms.is_used:
-
-            await update.message.reply_text(
-                "⚠️ This transaction was already used.", 
-                reply_markup=HOME_KEYBOARD,
-            )
-
-            return
-
-
-
-        telegram_id = update.effective_user.id
-
-
-        user = (
-            db.query(User)
-            .filter(
-                User.telegram_id == telegram_id
-            )
-            .first()
-        )
-
-
-        if not user:
-
-            await update.message.reply_text(
-                "User not found, resend again correctly", 
-                reply_markup=HOME_KEYBOARD,
-            )
-            return
-
-
-
-        # CREDIT USER BALANCE
-
-        user.balance += sms.amount
-
-
-        # Create deposit history record
-
-        deposit = Deposit(
-
-            user_id=user.id,
-
-            amount=sms.amount,
-
-            method="telebirr",
-
-            sms_transaction_id=sms.transaction_id
-
-        )
-
-        db.add(deposit)
-
-
-
-        # mark SMS consumed
-
-        sms.is_used = True
-        sms.used_at = datetime.utcnow()
-
-
-
-        db.commit()
-
-
-
-        context.user_data["waiting_deposit"] = False
-
-
-        await update.message.reply_text(
-            f"""
-                ✅ Deposit Successful
-
-                💰 Amount:
-                {sms.amount} ETB
-
-                🆔 Transaction:
-                {sms.transaction_id}
-
-                Your balance has been updated.
-                """, 
-                reply_markup=HOME_KEYBOARD,
-        )
-
-
-    finally:
-
-        db.close()
-
-async def deposit_paid(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def withdraw_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = resolve_lang(update, context)
     query = update.callback_query
-    await query.answer()
-
-
-    telegram_id = update.effective_user.id
-
-
-    context.user_data["waiting_deposit"] = True
-
+    if query:
+        await _answer(query)
 
     db = SessionLocal()
-
-    try:
-
-        user = (
-            db.query(User)
-            .filter(
-                User.telegram_id == telegram_id
-            )
-            .first()
-        )
-
-
-        if not user:
-
-            await query.message.reply_text(
-                "User not found", 
-                reply_markup=HOME_KEYBOARD,
-            )
-            return
-
-
-        await query.message.reply_text(
-            "📨 Forward your Telebirr confirmation SMS now.", 
-            reply_markup=HOME_KEYBOARD,
-        )
-
-
-    finally:
-        db.close()
-
-async def withdraw_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    query = update.callback_query
-    await query.answer()
-
-    db = SessionLocal()
-
     try:
         user = (
             db.query(User)
-            .filter(User.telegram_id == query.from_user.id)
+            .filter(User.telegram_id == update.effective_user.id)
             .first()
         )
-
         pending = None
-
         if user:
             pending = (
                 db.query(WithdrawRequest)
@@ -1464,136 +829,89 @@ async def withdraw_handler(
                 )
                 .first()
             )
-
     finally:
         db.close()
 
-    keyboard = []
-
-    # Only allow new withdrawals if none are pending
+    keyboard: list[list[InlineKeyboardButton]] = []
     if not pending:
-
         keyboard.extend(
             [
                 [
                     InlineKeyboardButton(
-                        "📱 Telebirr",
+                        t(lang, "method.telebirr"),
                         callback_data="withdraw_method_telebirr",
                     )
                 ],
                 [
                     InlineKeyboardButton(
-                        "🏦 CBE",
+                        t(lang, "method.cbe"),
                         callback_data="withdraw_method_cbe",
                     )
                 ],
             ]
         )
-
-        text = "💸 <b>Select Withdrawal Method</b>"
-
-    # Show cancel button if pending exists
-    if pending:
-
+        text = t(lang, "withdraw.select")
+    else:
         keyboard.append(
             [
                 InlineKeyboardButton(
-                    "❌ Cancel Pending Withdrawal",
+                    t(lang, "btn.cancel_pending_withdraw"),
                     callback_data=f"cancel_pending_withdraw_{pending.id}",
                 )
             ]
         )
-
-        text = (
-            f"""
-        💸 <b>Withdraw</b>
-
-        ⏳ You already have a pending withdrawal.
-
-        💰 Amount: {pending.amount} ETB
-        📱 Method: {pending.method}
-
-        You can cancel it before submitting another request.
-        """
+        text = t(
+            lang,
+            "withdraw.pending",
+            amount=pending.amount,
+            method=pending.method,
         )
 
     keyboard.append(
-        [
-            InlineKeyboardButton(
-                "🔙 Back",
-                callback_data="home",
-            )
-        ]
+        [InlineKeyboardButton(t(lang, "btn.back"), callback_data="home")]
     )
+    markup = InlineKeyboardMarkup(keyboard)
+    if query:
+        await query.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
+    else:
+        await update.message.reply_text(text, parse_mode="HTML", reply_markup=markup)
 
-    await query.message.reply_text(
-        text,
-        parse_mode="HTML",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
+
+async def withdraw_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await withdraw_handler(update, context)
 
 
-async def withdraw_method_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def withdraw_method_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-
-    method = query.data.replace(
-        "withdraw_method_",
-        "",
-    )
-
-    context.user_data["withdraw"] = {
-        "method": method.upper(),
-    }
-
+    await _answer(query)
+    lang = resolve_lang(update, context)
+    method = query.data.replace("withdraw_method_", "")
+    context.user_data["withdraw"] = {"method": method.upper()}
     context.user_data["withdraw_step"] = "account_name"
+    await query.message.reply_text(t(lang, "withdraw.ask_name"))
 
-    await query.message.reply_text(
-        "👤 Enter the account holder's full name."
-    )
 
-async def confirm_withdraw(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
+async def confirm_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-
+    await _answer(query)
+    lang = resolve_lang(update, context)
     db = SessionLocal()
-
     try:
-
         user = (
-            db.query(User)
-            .filter(
-                User.telegram_id == query.from_user.id
-            )
-            .first()
+            db.query(User).filter(User.telegram_id == query.from_user.id).first()
         )
-
         if not user:
-
             await query.message.reply_text(
-                "❌ Please register first.",
-                reply_markup=HOME_KEYBOARD,
+                t(lang, "err.not_registered"),
+                reply_markup=home_keyboard(lang),
             )
-
             return
-
         data = context.user_data.get("withdraw")
-
         if not data:
-
             await query.message.reply_text(
-                "❌ Withdrawal session expired.",
-                reply_markup=HOME_KEYBOARD,
+                t(lang, "withdraw.expired"),
+                reply_markup=home_keyboard(lang),
             )
-
             return
 
         request = WithdrawRequest(
@@ -1604,89 +922,55 @@ async def confirm_withdraw(
             amount=data["amount"],
             status="PENDING",
         )
-
         db.add(request)
-
         db.commit()
         context.user_data.pop("withdraw", None)
         context.user_data.pop("withdraw_step", None)
         await query.message.reply_text(
-            f"""
-        ✅ <b>Withdrawal Request Submitted</b>
-
-        💰 Amount:
-        {request.amount} ETB
-
-        📱 Method:
-        {request.method}
-
-        ⏳ Status:
-        Pending Approval
-
-        Your request has been sent successfully.
-
-        You'll receive a notification once it has been processed.
-        """,
+            t(
+                lang,
+                "withdraw.submitted",
+                amount=request.amount,
+                method=request.method,
+            ),
             parse_mode="HTML",
-            reply_markup=HOME_KEYBOARD,
+            reply_markup=home_keyboard(lang),
         )
-
     finally:
-
         db.close()
 
-async def cancel_withdraw(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
 
+async def cancel_withdraw(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-
+    await _answer(query)
+    lang = resolve_lang(update, context)
     context.user_data.pop("withdraw", None)
     context.user_data.pop("withdraw_step", None)
-
     await query.message.reply_text(
-        "❌ Withdrawal cancelled.",
-        reply_markup=HOME_KEYBOARD,
+        t(lang, "withdraw.cancelled"),
+        reply_markup=home_keyboard(lang),
     )
+
 
 async def cancel_pending_withdraw(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-
     query = update.callback_query
-    await query.answer()
-
-    withdraw_id = uuid.UUID(
-        query.data.replace(
-            "cancel_pending_withdraw_",
-            "",
-        )
-    )
-
+    await _answer(query)
+    lang = resolve_lang(update, context)
+    withdraw_id = uuid.UUID(query.data.replace("cancel_pending_withdraw_", ""))
     db = SessionLocal()
-
     try:
-
         user = (
-            db.query(User)
-            .filter(
-                User.telegram_id == query.from_user.id
-            )
-            .first()
+            db.query(User).filter(User.telegram_id == query.from_user.id).first()
         )
-
         if not user:
-
             await query.message.reply_text(
-                "❌ Please register first.",
-                reply_markup=HOME_KEYBOARD,
+                t(lang, "err.not_registered"),
+                reply_markup=home_keyboard(lang),
             )
-
             return
-
         withdraw = (
             db.query(WithdrawRequest)
             .filter(
@@ -1696,32 +980,18 @@ async def cancel_pending_withdraw(
             )
             .first()
         )
-
         if not withdraw:
-
             await query.message.reply_text(
-                "❌ Pending withdrawal not found.",
-                reply_markup=HOME_KEYBOARD,
+                t(lang, "withdraw.pending_missing"),
+                reply_markup=home_keyboard(lang),
             )
-
             return
-
         withdraw.status = "CANCELLED"
-
         db.commit()
-
         await query.message.reply_text(
-            """
-✅ <b>Withdrawal Cancelled</b>
-
-Your pending withdrawal request has been cancelled successfully.
-
-You can now submit a new withdrawal request.
-            """,
+            t(lang, "withdraw.pending_cancelled"),
             parse_mode="HTML",
-            reply_markup=HOME_KEYBOARD,
+            reply_markup=home_keyboard(lang),
         )
-
     finally:
-
         db.close()

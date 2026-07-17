@@ -10,6 +10,7 @@ import secrets
 import string
 
 from app.models.sms_transaction import ReferralReward
+from app.bot.locale import hint_locale_from_telegram
 
 
 class AuthService:
@@ -65,12 +66,27 @@ class AuthService:
                 username=telegram_user.get("username"),
                 first_name=telegram_user.get("first_name", ""),
                 last_name=telegram_user.get("last_name"),
-                language_code=telegram_user.get("language_code"),
+                language_code=hint_locale_from_telegram(
+                    telegram_user.get("language_code")
+                ),
                 photo_url=telegram_user.get("photo_url"),
                 is_premium=telegram_user.get("is_premium", False),
             )
 
             self.db.add(user)
+            self.db.commit()
+            self.db.refresh(user)
+
+        else:
+            # Refresh identity fields only from Telegram's verified init data.
+            # Admin authorization intentionally uses this persisted username,
+            # never a client-supplied query/body/localStorage value.
+            user.username = telegram_user.get("username")
+            user.first_name = telegram_user.get("first_name", "")
+            user.last_name = telegram_user.get("last_name")
+            user.photo_url = telegram_user.get("photo_url")
+            user.is_premium = telegram_user.get("is_premium", False)
+            user.last_seen_at = datetime.now(timezone.utc)
             self.db.commit()
             self.db.refresh(user)
 
@@ -107,7 +123,9 @@ class AuthService:
                 username=telegram_user.username,
                 first_name=telegram_user.first_name,
                 last_name=telegram_user.last_name,
-                language_code=telegram_user.language_code,
+                language_code=hint_locale_from_telegram(
+                    telegram_user.language_code
+                ),
                 is_premium=telegram_user.is_premium or False,
 
                 # new user's own code
@@ -200,9 +218,8 @@ class AuthService:
             user.last_name = telegram_user.last_name
             updated_fields.append("Last Name")
 
-        if user.language_code != telegram_user.language_code:
-            user.language_code = telegram_user.language_code
-            updated_fields.append("Language")
+        # Do not overwrite language_code on sync — the Telegram bot persists
+        # en|am preferences on this column via /language.
 
         if user.is_premium != (telegram_user.is_premium or False):
             user.is_premium = telegram_user.is_premium or False

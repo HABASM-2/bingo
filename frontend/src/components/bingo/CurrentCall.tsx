@@ -1,4 +1,5 @@
 import { RefreshCw, Volume2, VolumeX, Zap } from "lucide-react";
+import { useI18n } from "../../i18n";
 import { callLabel } from "../../utils/cartela";
 import { columnColorForNumber } from "./colors";
 
@@ -42,6 +43,7 @@ export function CallControls({
   showAuto = true,
   compact = false,
 }: CallControlsProps) {
+  const { t } = useI18n();
   const buttonClass = compact ? "py-1.5 text-[10px]" : "py-2 text-xs";
 
   return (
@@ -52,7 +54,7 @@ export function CallControls({
         className={`flex items-center justify-center gap-1 rounded-xl bg-blue-600 font-bold text-white shadow-sm transition active:scale-95 ${buttonClass}`}
       >
         <RefreshCw size={compact ? 12 : 14} />
-        Refresh
+        {t("common.refresh")}
       </button>
 
       <button
@@ -71,7 +73,7 @@ export function CallControls({
         ) : (
           <VolumeX size={compact ? 12 : 14} />
         )}
-        {audioBlocked ? "Enable" : "Sound"}
+        {audioBlocked ? t("common.enable") : t("common.sound")}
       </button>
 
       {showAuto && (
@@ -83,7 +85,7 @@ export function CallControls({
           }`}
         >
           <Zap size={compact ? 12 : 14} />
-          Auto {autoOn ? "ON" : "OFF"}
+          {t("bingo.auto", { state: t(autoOn ? "common.on" : "common.off") })}
         </button>
       )}
     </div>
@@ -105,6 +107,7 @@ export function CurrentCall({
   showControls = true,
   emphasizeCall = false,
 }: CurrentCallProps) {
+  const { t } = useI18n();
   const recent = [...drawn].reverse().slice(0, compact ? 4 : 5);
 
   return (
@@ -115,7 +118,7 @@ export function CurrentCall({
         } ${emphasizeCall ? "ring-2 ring-yellow-300 ring-offset-1 ring-offset-transparent" : ""}`}
       >
         <span className={`font-bold text-white ${compact ? "text-sm" : "text-base"}`}>
-          Current Call
+          {t("bingo.currentCall")}
         </span>
         <div
           className={`flex items-center justify-center rounded-full bg-orange-500 font-extrabold text-white shadow-lg transition-transform ${
@@ -132,7 +135,7 @@ export function CurrentCall({
         }`}
       >
         {recent.length === 0 ? (
-          <span className="px-1 text-xs text-purple-400">Waiting…</span>
+          <span className="px-1 text-xs text-purple-400">{t("bingo.waiting")}</span>
         ) : (
           recent.map((n, idx) => {
             const color = columnColorForNumber(n);

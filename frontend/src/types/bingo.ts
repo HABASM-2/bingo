@@ -129,6 +129,25 @@ export interface PlayerCountMessage {
   count: number;
 }
 
+export interface PlayerLeftMessage {
+  type: "player_left";
+  user_id: string;
+  count: number;
+}
+
+export interface BoardDeltaMessage {
+  type: "board_delta";
+  action: "taken" | "released" | "released_all";
+  user_id: string;
+  board_id?: number | null;
+  board_ids: number[];
+  taken_boards: number[];
+  selected_boards_count: number;
+  players_in_round: number;
+  projected_derash: string;
+  derash: string;
+}
+
 export interface LobbyTickMessage {
   type: "lobby_tick";
   seconds_left: number;
@@ -180,6 +199,8 @@ export interface PongMessage {
 export type BingoServerMessage =
   | RoomStateMessage
   | PlayerCountMessage
+  | PlayerLeftMessage
+  | BoardDeltaMessage
   | LobbyTickMessage
   | ToastMessage
   | BallMessage

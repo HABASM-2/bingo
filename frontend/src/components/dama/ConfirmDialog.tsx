@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useI18n } from "../../i18n";
 
 interface ConfirmDialogProps {
   open: boolean;
@@ -15,12 +16,13 @@ export function ConfirmDialog({
   open,
   title,
   message,
-  confirmLabel = "Confirm",
-  cancelLabel = "Cancel",
+  confirmLabel,
+  cancelLabel,
   danger = false,
   onConfirm,
   onCancel,
 }: ConfirmDialogProps) {
+  const { t } = useI18n();
   if (!open) return null;
 
   return (
@@ -40,7 +42,7 @@ export function ConfirmDialog({
             onClick={onCancel}
             className="flex-1 rounded-2xl bg-purple-50 py-2.5 text-sm font-bold text-purple-800 dark:bg-white/10 dark:text-purple-100"
           >
-            {cancelLabel}
+            {cancelLabel ?? t("common.cancel")}
           </button>
           <button
             type="button"
@@ -49,7 +51,7 @@ export function ConfirmDialog({
               danger ? "bg-rose-500" : "bg-orange-500"
             }`}
           >
-            {confirmLabel}
+            {confirmLabel ?? t("common.confirm")}
           </button>
         </div>
       </div>

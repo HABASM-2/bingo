@@ -50,7 +50,7 @@ async def aviator_ws(websocket: WebSocket, token: str | None = None):
         await websocket.close(code=4401)
         return
 
-    user = _authenticate(token)
+    user = await asyncio.to_thread(_authenticate, token)
     if user is None:
         await websocket.close(code=4401)
         return
@@ -63,8 +63,6 @@ async def aviator_ws(websocket: WebSocket, token: str | None = None):
     conn_token = await hub.connect(user_id, display_name, websocket)
 
     try:
-        import asyncio
-
         from app.aviator import wallet as aviator_wallet
 
         snap = await service.snapshot()

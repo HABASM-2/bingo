@@ -1,4 +1,5 @@
 import type { BingoCard, RoomStateMessage, WinnerInfo } from "../../types/bingo";
+import { useI18n } from "../../i18n";
 import { CalledColumns } from "./CalledColumns";
 import { CallControls, CurrentCall } from "./CurrentCall";
 import { Cartela } from "./Cartela";
@@ -49,6 +50,7 @@ export function ActiveGameView({
   winHold = false,
   winners = [],
 }: ActiveGameViewProps) {
+  const { t } = useI18n();
   const drawnSet = new Set(drawn);
   const myStake = (Number(room.board_price) * cards.length).toFixed(0);
   const twoCards = cards.length >= 2;
@@ -60,11 +62,11 @@ export function ActiveGameView({
   return (
     <div className="flex flex-1 flex-col overflow-hidden animate-[fadeIn_0.3s_ease-out]">
       <div className="flex gap-1.5 px-2 py-2">
-        <Chip label="Game" value={room.game_id ?? "—"} />
-        <Chip label="Derash" value={room.derash} />
-        <Chip label="Players" value={String(room.players_in_round)} />
-        <Chip label="Bet" value={myStake} />
-        <Chip label="Call" value={String(drawn.length)} />
+        <Chip label={t("bingo.game")} value={room.game_id ?? "—"} />
+        <Chip label={t("bingo.derash")} value={room.derash} />
+        <Chip label={t("common.players")} value={String(room.players_in_round)} />
+        <Chip label={t("common.bet")} value={myStake} />
+        <Chip label={t("bingo.call")} value={String(drawn.length)} />
       </div>
 
       <div className="flex min-h-0 flex-1 gap-1.5 overflow-hidden px-1.5 pb-1.5">
@@ -87,7 +89,7 @@ export function ActiveGameView({
 
           {winHold && (
             <p className="animate-pulse text-center text-[10px] font-bold text-orange-500">
-              BINGO! Highlighting the winning line…
+              {t("bingo.winHoldActive")}
             </p>
           )}
 
@@ -129,7 +131,7 @@ export function ActiveGameView({
                       onClick={() => onClaim(card.card_id)}
                       className="rounded-full bg-orange-500 px-2.5 py-0.5 text-[10px] font-extrabold tracking-wide text-white shadow active:scale-95"
                     >
-                      BINGO
+                      {t("bingo.bingoButton")}
                     </button>
                   </div>
                   <Cartela

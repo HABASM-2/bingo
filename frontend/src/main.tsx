@@ -4,6 +4,7 @@ import { ThemeProvider } from "next-themes";
 
 import "./index.css";
 import App from "./App";
+import { I18nProvider } from "./i18n";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
@@ -13,7 +14,9 @@ createRoot(document.getElementById("root")!).render(
       enableSystem
       disableTransitionOnChange
     >
-      <App />
+      <I18nProvider>
+        <App />
+      </I18nProvider>
     </ThemeProvider>
   </StrictMode>,
 );

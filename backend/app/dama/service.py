@@ -570,7 +570,7 @@ async def offer_rematch(user_id: str, match_id: str, stake_raw=None) -> dict:
     match.rematch_stake = stake_s
     await store.save_match(match)
 
-    peer_online = hub.is_connected(peer)
+    peer_online = hub.is_connected(peer) or (await store.get_online(peer) is not None)
     delivered = await hub.send(
         peer,
         {

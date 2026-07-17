@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useI18n } from "../../i18n";
 import { BINGO_COLUMN_LETTERS, cartelaForBoard, patternCells } from "../../utils/cartela";
 import { COLUMN_COLORS } from "./colors";
 import type { WinnerInfo } from "../../types/bingo";
@@ -25,6 +26,7 @@ function WinnerCard({
   pattern: string;
   drawnSet: Set<number>;
 }) {
+  const { t } = useI18n();
   const grid = cartelaForBoard(boardId);
   const lineSet = new Set(patternCells(pattern).map(([r, c]) => `${r}-${c}`));
 
@@ -68,7 +70,7 @@ function WinnerCard({
       </div>
 
       <p className="mt-1.5 text-center text-sm font-bold text-orange-500">
-        Board number {boardId}
+        {t("bingo.winner.boardNumber", { id: boardId })}
       </p>
     </div>
   );
@@ -83,6 +85,7 @@ export function WinnerOverlay({
   youWon,
   seconds,
 }: WinnerOverlayProps) {
+  const { t } = useI18n();
   const [countdown, setCountdown] = useState(seconds);
 
   useEffect(() => {
@@ -112,7 +115,7 @@ export function WinnerOverlay({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 px-4 backdrop-blur-sm">
       <div className="flex max-h-[90vh] w-full max-w-sm flex-col overflow-hidden rounded-3xl bg-white shadow-2xl">
         <div className="bg-orange-500 px-5 pb-4 pt-5 text-center">
-          <h1 className="text-4xl font-black tracking-wide text-white drop-shadow">BINGO!</h1>
+          <h1 className="text-4xl font-black tracking-wide text-white drop-shadow">{t("bingo.winner.title")}</h1>
 
           {hasWinner ? (
             <div className="mt-3 flex flex-wrap items-center justify-center gap-2">
@@ -122,17 +125,24 @@ export function WinnerOverlay({
                 </span>
               )}
               <span className="text-base font-semibold text-white">
-                {youWon ? "you have won the game." : "have won the game."}
+                {t(youWon ? "bingo.winner.youWon" : "bingo.winner.theyWon")}
               </span>
             </div>
           ) : (
-            <p className="mt-3 text-base font-semibold text-white">No winner this round</p>
+            <p className="mt-3 text-base font-semibold text-white">{t("bingo.winner.none")}</p>
           )}
 
           {showSplit && (
             <p className="mt-2 text-sm font-semibold text-orange-50">
-              Shared {Number(derash)} → {Number(derashShare)} each ({winnerCount} players
-              {boardCount !== winnerCount ? `, ${boardCount} boards` : ""})
+              {t(
+                boardCount !== winnerCount ? "bingo.winner.sharedBoards" : "bingo.winner.shared",
+                {
+                  total: Number(derash),
+                  share: Number(derashShare),
+                  winners: winnerCount,
+                  boards: boardCount,
+                },
+              )}
             </p>
           )}
         </div>

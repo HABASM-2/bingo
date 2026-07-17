@@ -284,6 +284,43 @@ async def _broadcast_player_count(room: RoomState) -> None:
     })
 
 
+async def _board_economics(room_id: str, board_price: str) -> dict:
+    board_map = await redis_store.get_board_map(room_id)
+    total_selected = len(board_map)
+    selectors = len(set(board_map.values()))
+    return {
+        "selected_boards_count": total_selected,
+        "players_in_round": selectors,
+        "projected_derash": str(Decimal(board_price) * total_selected),
+        "derash": str(Decimal(board_price) * total_selected),
+        "taken_boards": sorted(board_map.keys()),
+    }
+
+
+async def _broadcast_board_delta(
+    room_id: str,
+    *,
+    action: str,
+    user_id: str,
+    board_id: int | None = None,
+    board_ids: list[int] | None = None,
+) -> None:
+    """Lightweight lobby sync — clients merge taken/my boards locally."""
+    room = await get_room(room_id)
+    if room is None or room.status != "lobby":
+        return
+
+    payload = {
+        "type": "board_delta",
+        "action": action,
+        "user_id": user_id,
+        "board_id": board_id,
+        "board_ids": board_ids or ([board_id] if board_id is not None else []),
+        **(await _board_economics(room_id, room.board_price)),
+    }
+    await manager.broadcast(room_id, payload)
+
+
 async def broadcast_room_sync(room_id: str) -> None:
     """Ask every backend instance to push a fresh, personalized
     ``room_state`` to each of its locally-connected sockets in this room."""
@@ -371,6 +408,18 @@ async def join_room(
 
 
 async def leave_room(room_id: str, user_id: str) -> RoomState | None:
+    """Mark a player disconnected; prune from Redis when safe.
+
+    Lobby: release their board reservations and remove the player entry so
+    roster JSON does not grow forever across connect/disconnect churn.
+    In-progress / finished: keep the entry (``connected=False``) so a quick
+    reconnect can resume mid-round; ``reset_to_lobby`` drops disconnected
+    players once the round is over.
+    """
+
+    released_boards: list[int] = []
+    removed = False
+
     async with room_lock(room_id):
         room = await get_room(room_id)
 
@@ -382,11 +431,36 @@ async def leave_room(room_id: str, user_id: str) -> RoomState | None:
         if player is None:
             return room
 
-        player.connected = False
+        if room.status == "lobby":
+            board_map = await redis_store.get_board_map(room_id)
+            released_boards = sorted(
+                board_id for board_id, owner in board_map.items() if owner == user_id
+            )
+            if released_boards:
+                await redis_store.release_all_boards(room_id, user_id)
+            room.selections.pop(user_id, None)
+            room.players.pop(user_id, None)
+            removed = True
+        else:
+            player.connected = False
 
         await save_room(room)
 
     await _broadcast_player_count(room)
+
+    if removed:
+        await manager.broadcast(room_id, {
+            "type": "player_left",
+            "user_id": user_id,
+            "count": room.connected_player_count(),
+        })
+        if released_boards:
+            await _broadcast_board_delta(
+                room_id,
+                action="released_all",
+                user_id=user_id,
+                board_ids=released_boards,
+            )
 
     return room
 
@@ -451,7 +525,12 @@ async def select_board(room_id: str, user_id: str, board_id: int) -> None:
     # result is CLAIMED (1) or ALREADY_MINE (0): both are success. Only bother
     # broadcasting when something actually changed.
     if result == redis_store.ReserveResult.CLAIMED:
-        await service_broadcast_lobby(room_id)
+        await _broadcast_board_delta(
+            room_id,
+            action="taken",
+            user_id=user_id,
+            board_id=board_id,
+        )
 
 
 async def deselect_board(room_id: str, user_id: str, board_id: int) -> None:
@@ -466,7 +545,12 @@ async def deselect_board(room_id: str, user_id: str, board_id: int) -> None:
     removed = await redis_store.release_board(room_id, user_id, board_id)
 
     if removed:
-        await service_broadcast_lobby(room_id)
+        await _broadcast_board_delta(
+            room_id,
+            action="released",
+            user_id=user_id,
+            board_id=board_id,
+        )
 
 
 async def deselect_all(room_id: str, user_id: str) -> None:
@@ -478,14 +562,26 @@ async def deselect_all(room_id: str, user_id: str) -> None:
     if room.status != "lobby":
         raise BingoError("Boards can only be changed in the lobby")
 
+    board_map = await redis_store.get_board_map(room_id)
+    released = sorted(
+        board_id for board_id, owner in board_map.items() if owner == user_id
+    )
     removed = await redis_store.release_all_boards(room_id, user_id)
 
     if removed:
-        await service_broadcast_lobby(room_id)
+        await _broadcast_board_delta(
+            room_id,
+            action="released_all",
+            user_id=user_id,
+            board_ids=released,
+        )
 
 
 async def service_broadcast_lobby(room_id: str) -> None:
-    """Push updated selections/taken boards to everyone in the lobby."""
+    """Push updated selections/taken boards to everyone in the lobby.
+
+    Prefer board_delta for tap hot-path; full sync remains for phase changes.
+    """
 
     await broadcast_room_sync(room_id)
 
@@ -668,6 +764,14 @@ async def reset_to_lobby(room_id: str) -> RoomState | None:
 
         for player in room.players.values():
             player.cards_count = 0
+
+        # Drop players who left during the previous round so Redis roster
+        # JSON does not accumulate forever across disconnect churn.
+        room.players = {
+            uid: player
+            for uid, player in room.players.items()
+            if player.connected
+        }
 
         await save_room(room)
 

@@ -7,6 +7,16 @@ per room - state is tiny (a handful of players, up to
 under a short-lived distributed lock (``room_lock``) is simple and correct
 across multiple backend instances, without needing per-field Redis
 operations.
+
+Retention policy
+----------------
+Room JSON (``bingo:room:{id}``) and lobby board hashes
+(``bingo:room:{id}:boards``) receive a sliding TTL of ``ROOM_TTL_SECONDS``
+(24h) on every ``save_room`` / board mutation. Active games keep refreshing
+via lobby ticks, draws, and joins, so TTL never expires mid-round. Idle
+abandoned rooms (no saves for 24h) expire and are swept from the rooms
+index on the next ``list_rooms`` call. This bounds Redis growth without
+deleting an in-progress game.
 """
 
 from __future__ import annotations
@@ -37,6 +47,9 @@ RATE_KEY = "bingo:rl:{user_id}:{action}"
 ROOM_LOCK_TTL_MS = 4000
 ROOM_LOCK_RETRY_DELAY_SECONDS = 0.02
 ROOM_LOCK_MAX_WAIT_SECONDS = 3.0
+# Sliding retention for room JSON + board hash. Refreshed on every save /
+# board mutation so live rooms stay alive; idle rooms expire after 24h.
+ROOM_TTL_SECONDS = 24 * 60 * 60
 
 _RELEASE_LOCK_SCRIPT = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
@@ -280,7 +293,11 @@ async def get_room(room_id: str) -> RoomState | None:
 
 async def save_room(room: RoomState) -> None:
     redis = get_redis()
-    await redis.set(_room_key(room.room_id), room.to_json())
+    await redis.set(
+        _room_key(room.room_id),
+        room.to_json(),
+        ex=ROOM_TTL_SECONDS,
+    )
 
 
 async def create_room(
@@ -301,7 +318,7 @@ async def create_room(
 
     redis = get_redis()
 
-    await redis.set(_room_key(room.room_id), room.to_json())
+    await redis.set(_room_key(room.room_id), room.to_json(), ex=ROOM_TTL_SECONDS)
     await redis.sadd(ROOMS_INDEX_KEY, room.room_id)
 
     return room
@@ -348,7 +365,7 @@ async def get_or_create_room(
 
         redis = get_redis()
 
-        await redis.set(_room_key(room.room_id), room.to_json())
+        await redis.set(_room_key(room.room_id), room.to_json(), ex=ROOM_TTL_SECONDS)
         await redis.sadd(ROOMS_INDEX_KEY, room.room_id)
 
         return room
@@ -426,8 +443,10 @@ async def reserve_board(
         str(max_boards),
         str(pool_max),
     )
-
-    return int(result)
+    code = int(result)
+    if code in (ReserveResult.CLAIMED, ReserveResult.ALREADY_MINE):
+        await redis.expire(_boards_key(room_id), ROOM_TTL_SECONDS)
+    return code
 
 
 async def release_board(room_id: str, user_id: str, board_id: int) -> bool:
@@ -439,7 +458,8 @@ async def release_board(room_id: str, user_id: str, board_id: int) -> bool:
         str(board_id),
         user_id,
     )
-
+    if removed:
+        await redis.expire(_boards_key(room_id), ROOM_TTL_SECONDS)
     return bool(removed)
 
 
@@ -451,7 +471,8 @@ async def release_all_boards(room_id: str, user_id: str) -> int:
         _boards_key(room_id),
         user_id,
     )
-
+    if removed:
+        await redis.expire(_boards_key(room_id), ROOM_TTL_SECONDS)
     return int(removed)
 
 

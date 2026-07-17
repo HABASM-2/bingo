@@ -1,7 +1,14 @@
 import { useMemo, useState } from "react";
 import { Wallet } from "lucide-react";
+import { useI18n } from "../../i18n";
+import {
+  DAMA_MAX_STAKE,
+  DAMA_MIN_STAKE,
+  isValidDamaStake,
+} from "../../games/dama/constants";
 
 export const DAMA_STAKE_PRESETS = ["5", "10", "15"] as const;
+export { DAMA_MIN_STAKE, DAMA_MAX_STAKE, isValidDamaStake };
 
 interface StakePickerProps {
   balance: string | null;
@@ -33,31 +40,35 @@ export function StakePicker({
   balance,
   stake,
   onStakeChange,
-  title = "Choose stake",
-  subtitle = "Winner takes the pot after a 10% fee. Draw refunds stakes.",
+  title,
+  subtitle,
 }: StakePickerProps) {
+  const { t } = useI18n();
   const [custom, setCustom] = useState("");
   const preview = useMemo(() => stakePrizePreview(stake), [stake]);
   const bal = Number(balance);
+  const stakeOk = isValidDamaStake(stake);
   const canAfford = Number.isFinite(bal) && bal >= Number(stake);
 
   return (
     <div className="rounded-3xl bg-white/95 p-4 shadow-md ring-1 ring-orange-100 dark:bg-[#1E1B2E] dark:ring-white/10">
       <div className="mb-3 flex items-center justify-between gap-2">
         <div>
-          <h2 className="text-base font-extrabold text-purple-950 dark:text-white">{title}</h2>
+          <h2 className="text-base font-extrabold text-purple-950 dark:text-white">
+            {title ?? t("dama.chooseStake")}
+          </h2>
           <p className="mt-0.5 text-[11px] font-medium text-purple-500 dark:text-purple-300/75">
-            {subtitle}
+            {subtitle ?? t("dama.chooseStakeHint")}
           </p>
         </div>
         <div className="rounded-2xl bg-violet-500/10 px-2.5 py-1.5 text-right">
           <p className="flex items-center justify-end gap-1 text-[10px] font-bold uppercase tracking-wide text-violet-600 dark:text-violet-300">
             <Wallet size={11} />
-            Wallet
+            {t("common.wallet")}
           </p>
           <p className="text-sm font-black tabular-nums text-purple-950 dark:text-white">
             {formatEtb(balance)}
-            <span className="ml-0.5 text-[10px] font-bold text-purple-400">ETB</span>
+            <span className="ml-0.5 text-[10px] font-bold text-purple-400">{t("common.etb")}</span>
           </p>
         </div>
       </div>
@@ -77,19 +88,19 @@ export function StakePicker({
                 : "bg-purple-50 text-purple-800 ring-1 ring-purple-100 dark:bg-white/10 dark:text-purple-100 dark:ring-white/10"
             }`}
           >
-            {p} ETB
+            {p} {t("common.etb")}
           </button>
         ))}
       </div>
 
       <label className="mt-3 block">
         <span className="text-[11px] font-bold uppercase tracking-wide text-purple-400">
-          Custom
+          {t("dama.custom")}
         </span>
         <input
           inputMode="decimal"
           value={custom}
-          placeholder="e.g. 25"
+          placeholder={t("dama.customPlaceholder")}
           onChange={(e) => {
             const v = e.target.value.replace(/[^\d.]/g, "");
             setCustom(v);
@@ -101,28 +112,33 @@ export function StakePicker({
 
       <div className="mt-3 grid grid-cols-3 gap-2 text-center">
         <div className="rounded-xl bg-stone-100/80 px-2 py-2 dark:bg-white/5">
-          <p className="text-[10px] font-bold uppercase text-stone-500">Pot</p>
+          <p className="text-[10px] font-bold uppercase text-stone-500">{t("common.pot")}</p>
           <p className="text-sm font-black tabular-nums text-stone-800 dark:text-white">
             {preview.pot}
           </p>
         </div>
         <div className="rounded-xl bg-stone-100/80 px-2 py-2 dark:bg-white/5">
-          <p className="text-[10px] font-bold uppercase text-stone-500">Fee</p>
+          <p className="text-[10px] font-bold uppercase text-stone-500">{t("common.fee")}</p>
           <p className="text-sm font-black tabular-nums text-stone-800 dark:text-white">
             {preview.fee}
           </p>
         </div>
         <div className="rounded-xl bg-emerald-50 px-2 py-2 dark:bg-emerald-950/30">
-          <p className="text-[10px] font-bold uppercase text-emerald-600">Win</p>
+          <p className="text-[10px] font-bold uppercase text-emerald-600">{t("common.win")}</p>
           <p className="text-sm font-black tabular-nums text-emerald-700 dark:text-emerald-300">
             {preview.prize}
           </p>
         </div>
       </div>
 
-      {!canAfford && Number(stake) > 0 && (
+      {Number(stake) > 0 && !stakeOk && (
         <p className="mt-2 text-center text-xs font-semibold text-rose-600">
-          Not enough balance for {stake} ETB
+          {t("dama.stakeTooLow", { min: String(DAMA_MIN_STAKE) })}
+        </p>
+      )}
+      {stakeOk && !canAfford && Number(stake) > 0 && (
+        <p className="mt-2 text-center text-xs font-semibold text-rose-600">
+          {t("dama.notEnoughBalance", { stake })}
         </p>
       )}
     </div>

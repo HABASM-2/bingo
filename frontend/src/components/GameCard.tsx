@@ -1,5 +1,6 @@
 import type { LucideIcon } from "lucide-react";
 import { Users, Play, Lock } from "lucide-react";
+import { useI18n } from "../i18n";
 
 type Game = {
   name: string;
@@ -15,6 +16,7 @@ interface GameCardProps {
 }
 
 export function GameCard({ game, onPlay }: GameCardProps) {
+  const { t } = useI18n();
   const Icon = game.icon;
 
   const live = game.status === "LIVE";
@@ -97,7 +99,7 @@ export function GameCard({ game, onPlay }: GameCardProps) {
             animate-pulse
             "
           >
-            LIVE
+            {t("gameCard.live")}
           </div>
         ) : (
           <div
@@ -114,7 +116,7 @@ export function GameCard({ game, onPlay }: GameCardProps) {
             text-white
             "
           >
-            SOON
+            {t("gameCard.soon")}
           </div>
         )}
       </div>
@@ -167,7 +169,7 @@ export function GameCard({ game, onPlay }: GameCardProps) {
               font-semibold
               "
             >
-              Online
+              {t("gameCard.online")}
             </span>
           )}
         </div>
@@ -218,12 +220,12 @@ export function GameCard({ game, onPlay }: GameCardProps) {
           {live ? (
             <>
               <Play size={18} />
-              Play Now
+              {t("gameCard.playNow")}
             </>
           ) : (
             <>
               <Lock size={18} />
-              Coming Soon
+              {t("gameCard.comingSoon")}
             </>
           )}
         </button>

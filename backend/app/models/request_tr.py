@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    Index,
     Numeric,
     String,
     func,
@@ -69,6 +70,10 @@ class DepositRequest(Base):
 
 class WithdrawRequest(Base):
     __tablename__ = "withdraw_requests"
+    __table_args__ = (
+        Index("ix_withdraw_requests_status_created", "status", "created_at"),
+        Index("ix_withdraw_requests_created_at", "created_at"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True),

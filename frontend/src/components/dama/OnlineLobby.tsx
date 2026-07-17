@@ -2,7 +2,8 @@ import { useMemo, useState } from "react";
 import { ArrowLeft, Search, Swords, UserRound, X } from "lucide-react";
 import type { DamaChallenge, DamaOnlinePlayer } from "../../types/dama";
 import type { WebSocketStatus } from "../../hooks/useWebSocket";
-import { StakePicker } from "./StakePicker";
+import { useI18n, type TranslationKey } from "../../i18n";
+import { StakePicker, isValidDamaStake } from "./StakePicker";
 
 interface OnlineLobbyProps {
   connectionStatus: WebSocketStatus;
@@ -22,10 +23,10 @@ interface OnlineLobbyProps {
   onClearError: () => void;
 }
 
-function statusLabel(status: DamaOnlinePlayer["status"]): string {
-  if (status === "idle") return "Available";
-  if (status === "challenging") return "Challenging";
-  return "In game";
+function statusKey(status: DamaOnlinePlayer["status"]): TranslationKey {
+  if (status === "idle") return "dama.available";
+  if (status === "challenging") return "dama.challenging";
+  return "dama.inGame";
 }
 
 export function OnlineLobby({
@@ -45,6 +46,7 @@ export function OnlineLobby({
   onCancel,
   onClearError,
 }: OnlineLobbyProps) {
+  const { t, ts } = useI18n();
   const [query, setQuery] = useState("");
 
   const others = useMemo(() => {
@@ -55,7 +57,7 @@ export function OnlineLobby({
   }, [players, query, selfUserId]);
 
   const connected = connectionStatus === "open";
-  const canAfford = Number(balance) >= Number(stake);
+  const canAfford = isValidDamaStake(stake) && Number(balance) >= Number(stake);
 
   return (
     <div className="flex h-full flex-col overflow-hidden px-3 py-3 animate-[fadeIn_0.25s_ease-out]">
@@ -69,12 +71,12 @@ export function OnlineLobby({
         </button>
         <div className="min-w-0 flex-1">
           <h1 className="text-lg font-extrabold text-purple-950 dark:text-white">
-            Online players
+            {t("dama.onlinePlayers")}
           </h1>
           <p className="text-[11px] font-medium text-purple-500 dark:text-purple-300/75">
             {connected
-              ? `${others.length} online · stake then challenge`
-              : "Connecting…"}
+              ? t("dama.onlineCount", { count: others.length })
+              : t("common.connecting")}
           </p>
         </div>
       </div>
@@ -84,8 +86,8 @@ export function OnlineLobby({
           balance={balance}
           stake={stake}
           onStakeChange={onStakeChange}
-          title="Match stake"
-          subtitle="Both players pay this amount when the challenge is accepted."
+          title={t("dama.matchStake")}
+          subtitle={t("dama.matchStakeHint")}
         />
       </div>
 
@@ -97,15 +99,15 @@ export function OnlineLobby({
         <input
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search by name"
+          placeholder={t("dama.searchPlaceholder")}
           className="w-full rounded-2xl border-0 bg-white/90 py-2.5 pl-9 pr-3 text-sm font-medium text-purple-950 shadow-sm ring-1 ring-purple-100 outline-none placeholder:text-purple-300 focus:ring-2 focus:ring-orange-300 dark:bg-[#1E1B2E] dark:text-white dark:ring-white/10"
         />
       </label>
 
       {error && (
         <div className="mb-2 flex items-start justify-between gap-2 rounded-2xl bg-rose-50 px-3 py-2 text-xs font-semibold text-rose-700 ring-1 ring-rose-100 dark:bg-rose-950/40 dark:text-rose-200 dark:ring-rose-900/50">
-          <span>{error}</span>
-          <button type="button" onClick={onClearError} aria-label="Dismiss">
+          <span>{ts(error)}</span>
+          <button type="button" onClick={onClearError} aria-label={t("common.dismiss")}>
             <X size={14} />
           </button>
         </div>
@@ -114,13 +116,13 @@ export function OnlineLobby({
       {incoming && (
         <div className="mb-3 shrink-0 rounded-2xl bg-gradient-to-r from-orange-500 to-amber-400 p-3 text-white shadow-md">
           <p className="text-xs font-semibold uppercase tracking-wide text-white/80">
-            Challenge · {incoming.stake} ETB
+            {t("dama.challengeStake", { stake: incoming.stake })}
           </p>
           <p className="mt-0.5 text-base font-extrabold">
-            {incoming.from_name} wants to play
+            {t("dama.wantsToPlay", { name: incoming.from_name })}
           </p>
           <p className="mt-1 text-xs text-white/85">
-            Accept to stake {incoming.stake} ETB from your wallet.
+            {t("dama.acceptStake", { stake: incoming.stake })}
           </p>
           <div className="mt-2 flex gap-2">
             <button
@@ -128,14 +130,14 @@ export function OnlineLobby({
               onClick={() => onAccept(incoming.id)}
               className="flex-1 rounded-xl bg-white px-3 py-2 text-sm font-bold text-orange-700"
             >
-              Accept
+              {t("common.accept")}
             </button>
             <button
               type="button"
               onClick={() => onDecline(incoming.id)}
               className="flex-1 rounded-xl bg-black/20 px-3 py-2 text-sm font-bold text-white"
             >
-              Decline
+              {t("common.decline")}
             </button>
           </div>
         </div>
@@ -144,17 +146,17 @@ export function OnlineLobby({
       {outgoing && (
         <div className="mb-3 shrink-0 rounded-2xl bg-white/90 p-3 shadow-sm ring-1 ring-violet-100 dark:bg-[#1E1B2E] dark:ring-white/10">
           <p className="text-sm font-bold text-purple-900 dark:text-white">
-            Waiting for {outgoing.to_name}…
+            {t("dama.waitingName", { name: outgoing.to_name })}
           </p>
           <p className="text-xs font-medium text-purple-500">
-            Stake {outgoing.stake} ETB · charged when they accept
+            {t("dama.stakeCharged", { stake: outgoing.stake })}
           </p>
           <button
             type="button"
             onClick={() => onCancel(outgoing.id)}
             className="mt-2 rounded-xl bg-purple-100 px-3 py-1.5 text-xs font-bold text-purple-800 dark:bg-white/10 dark:text-purple-100"
           >
-            Cancel challenge
+            {t("dama.cancelChallenge")}
           </button>
         </div>
       )}
@@ -162,13 +164,11 @@ export function OnlineLobby({
       <div className="min-h-0 flex-1 overflow-y-auto rounded-2xl bg-white/70 p-2 shadow-sm ring-1 ring-purple-100 dark:bg-[#1E1B2E]/80 dark:ring-white/10">
         {!connected ? (
           <p className="px-2 py-8 text-center text-sm font-medium text-purple-500">
-            Connecting to lobby…
+            {t("dama.connectingLobby")}
           </p>
         ) : others.length === 0 ? (
           <p className="px-2 py-8 text-center text-sm font-medium text-purple-500">
-            {query.trim()
-              ? "No players match your search."
-              : "No other players online yet. Stay here — they’ll appear when they open Dama."}
+            {query.trim() ? t("dama.noSearchMatch") : t("dama.noPlayersOnline")}
           </p>
         ) : (
           <ul className="flex flex-col gap-1.5">
@@ -206,7 +206,7 @@ export function OnlineLobby({
                           : "text-amber-600"
                       }`}
                     >
-                      {statusLabel(player.status)}
+                      {t(statusKey(player.status))}
                     </p>
                   </div>
                   <button

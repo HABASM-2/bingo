@@ -27,7 +27,11 @@ import {
   opposite,
   rowOf,
 } from "../../games/dama/engine";
-import { chooseAiMove } from "../../games/dama/ai";
+import {
+  canHumanOfferDrawVsComputer,
+  shouldComputerAcceptDraw,
+} from "../../games/dama/ai";
+import { cancelAllAiSearches, chooseAiMoveAsync, positionHash } from "../../games/dama/aiClient";
 import { DAMA_TURN_TIMEOUT_SEC } from "../../games/dama/constants";
 import { useDamaOnline } from "../../hooks/useDamaOnline";
 import {
@@ -40,7 +44,13 @@ import {
 import { ConfirmDialog } from "./ConfirmDialog";
 import { OnlineLobby } from "./OnlineLobby";
 import { ResultOverlay, type ResultKind } from "./ResultOverlay";
-import { StakePicker, stakePrizePreview } from "./StakePicker";
+import {
+  DAMA_MIN_STAKE,
+  StakePicker,
+  isValidDamaStake,
+  stakePrizePreview,
+} from "./StakePicker";
+import { tGlobal, useI18n } from "../../i18n";
 
 type Phase = "menu" | "stake_ai" | "online_lobby" | "play";
 
@@ -55,8 +65,8 @@ function sideLabel(
   if (mode === "online" && names) {
     return side === "red" ? names.red : names.black;
   }
-  if (mode === "ai") return side === HUMAN ? "You" : "Computer";
-  return side === "red" ? "Player 1" : "Player 2";
+  if (mode === "ai") return side === HUMAN ? tGlobal("dama.you") : tGlobal("dama.computer");
+  return side === "red" ? tGlobal("dama.player1") : tGlobal("dama.player2");
 }
 
 function outcomeMessage(
@@ -66,24 +76,14 @@ function outcomeMessage(
   agreedDraw = false,
 ): string {
   if (outcome === "draw") {
-    return agreedDraw ? "Draw agreed — stakes refunded." : "Draw — no more moves.";
+    return agreedDraw ? tGlobal("dama.drawAgreed") : tGlobal("dama.drawNoMoves");
   }
   if (mode === "online" && mySide) {
-    if (outcome === mySide) return "You win!";
-    return "You lose.";
+    if (outcome === mySide) return tGlobal("dama.youWin");
+    return tGlobal("dama.youLose");
   }
-  if (mode === "ai") return outcome === HUMAN ? "You win!" : "Computer wins.";
-  return outcome === "red" ? "Player 1 (Red) wins!" : "Player 2 (Black) wins!";
-}
-
-/** Long / stuck games may offer a mutual draw (mirrors server heuristic). */
-function isDrawEligible(plyCount: number, quietPlies: number, board: Board): boolean {
-  if (quietPlies >= 30) return true;
-  if (plyCount >= 50) return true;
-  const pieces = board.filter(Boolean);
-  const men = pieces.filter((p) => p!.kind === "man").length;
-  if (pieces.length > 0 && men === 0 && plyCount >= 20) return true;
-  return false;
+  if (mode === "ai") return outcome === HUMAN ? tGlobal("dama.youWin") : tGlobal("dama.computerWins");
+  return outcome === "red" ? tGlobal("dama.p1Wins") : tGlobal("dama.p2Wins");
 }
 
 function squareCenter(
@@ -121,6 +121,7 @@ export function DamaGame({
   onBalanceChange,
   isActive = true,
 }: DamaGameProps) {
+  const { t, ts } = useI18n();
   const [phase, setPhase] = useState<Phase>("menu");
   const [mode, setMode] = useState<GameMode>("ai");
   const [board, setBoard] = useState<Board>(() => createInitialBoard());
@@ -150,6 +151,7 @@ export function DamaGame({
   const [quietPlies, setQuietPlies] = useState(0);
   const [agreedDraw, setAgreedDraw] = useState(false);
   const [aiDrawOffered, setAiDrawOffered] = useState(false);
+  const [aiDrawDeclined, setAiDrawDeclined] = useState(false);
   const [forcedDraw, setForcedDraw] = useState(false);
   const [timeoutWinner, setTimeoutWinner] = useState<Side | null>(null);
   const [turnDeadline, setTurnDeadline] = useState<number | null>(null);
@@ -162,6 +164,8 @@ export function DamaGame({
   const [resultDismissed, setResultDismissed] = useState(false);
   const aiSettledRef = useRef(false);
   const timeoutClaimedRef = useRef(false);
+  const aiHistoryHashesRef = useRef<number[]>([]);
+  const aiSearchAbortRef = useRef<AbortController | null>(null);
 
 
   const boardRef = useRef<HTMLDivElement>(null);
@@ -201,11 +205,20 @@ export function DamaGame({
             : null
           : localOutcome;
 
+  /** Online: mutual long-game rules from server. Vs Computer: eval-gated. */
   const drawEligible =
     mode === "online" && online.match
       ? online.match.drawEligible
       : mode === "ai"
-        ? isDrawEligible(plyCount, quietPlies, board)
+        ? canHumanOfferDrawVsComputer({
+            board,
+            humanSide: HUMAN,
+            plyCount,
+            gameOver: Boolean(outcome),
+            aiThinking: thinking,
+            animating,
+            offerPending: aiDrawOffered,
+          })
         : false;
 
   const moves = useMemo(() => {
@@ -290,6 +303,10 @@ export function DamaGame({
     lastAppliedMoveKey.current = null;
     aiSettledRef.current = false;
     timeoutClaimedRef.current = false;
+    aiSearchAbortRef.current?.abort();
+    aiSearchAbortRef.current = null;
+    cancelAllAiSearches();
+    aiHistoryHashesRef.current = [];
     setMode(nextMode);
     setBoard(createInitialBoard());
     setTurn("red");
@@ -312,6 +329,7 @@ export function DamaGame({
     setQuietPlies(0);
     setAgreedDraw(false);
     setAiDrawOffered(false);
+    setAiDrawDeclined(false);
     setForcedDraw(false);
     setTimeoutWinner(null);
     setTurnDeadline(null);
@@ -349,11 +367,15 @@ export function DamaGame({
 
   const confirmAiStake = async () => {
     if (!accessToken) {
-      setStakeError("Sign in to play for stakes");
+      setStakeError(tGlobal("dama.signInStakes"));
+      return;
+    }
+    if (!isValidDamaStake(stake)) {
+      setStakeError(tGlobal("dama.stakeTooLow", { min: String(DAMA_MIN_STAKE) }));
       return;
     }
     if (Number(walletBalance) < Number(stake)) {
-      setStakeError("Insufficient balance");
+      setStakeError(tGlobal("dama.insufficientBalance"));
       return;
     }
     setStakeBusy(true);
@@ -378,7 +400,7 @@ export function DamaGame({
       );
       setSavedAiSession(null);
     } catch {
-      setStakeError("Could not start staked game. Check your balance.");
+      setStakeError(tGlobal("dama.startFailed"));
     } finally {
       setStakeBusy(false);
     }
@@ -390,6 +412,10 @@ export function DamaGame({
     lastAppliedMoveKey.current = null;
     aiSettledRef.current = false;
     timeoutClaimedRef.current = false;
+    aiSearchAbortRef.current?.abort();
+    aiSearchAbortRef.current = null;
+    cancelAllAiSearches();
+    aiHistoryHashesRef.current = [];
     setMode("ai");
     setBoard(session.board);
     setTurn(session.turn);
@@ -412,6 +438,7 @@ export function DamaGame({
     setQuietPlies(session.quiet_plies);
     setAgreedDraw(false);
     setAiDrawOffered(false);
+    setAiDrawDeclined(false);
     setForcedDraw(false);
     setTimeoutWinner(null);
     setResultDismissed(false);
@@ -507,6 +534,7 @@ export function DamaGame({
     setAgreedDraw(m.winner === "draw" && m.status === "finished");
     setForcedDraw(false);
     setAiDrawOffered(false);
+    setAiDrawDeclined(false);
     setTimeoutWinner(null);
     setResultDismissed(false);
     timeoutClaimedRef.current = false;
@@ -758,7 +786,18 @@ export function DamaGame({
           return;
         }
 
-        setHistory((h) => [...h, { board, turn }]);
+        setHistory((h) => {
+          const next = [...h, { board, turn }];
+          // Cap local undo history so long AI games cannot grow without bound.
+          return next.length > 60 ? next.slice(-60) : next;
+        });
+
+        if (mode === "ai") {
+          aiHistoryHashesRef.current.push(positionHash(board, turn));
+          if (aiHistoryHashesRef.current.length > 40) {
+            aiHistoryHashesRef.current = aiHistoryHashesRef.current.slice(-40);
+          }
+        }
 
         if (!opts?.skipHop) {
           await playHopAnimation(move, piece);
@@ -896,24 +935,40 @@ export function DamaGame({
     }
 
     let cancelled = false;
+    const boardSnapshot = board;
+    const abort = new AbortController();
+    aiSearchAbortRef.current?.abort();
+    aiSearchAbortRef.current = abort;
     setThinking(true);
+
     const timer = window.setTimeout(() => {
-      if (cancelled) return;
-      // Use latest board via functional path — choose on a snapshot from this effect.
-      const move = chooseAiMove(board, AI, "smart");
-      if (cancelled) return;
-      if (move) {
-        void commitMoveRef.current(move).finally(() => {
+      if (cancelled || abort.signal.aborted) return;
+      const { promise } = chooseAiMoveAsync(boardSnapshot, AI, {
+        difficulty: "hard",
+        signal: abort.signal,
+        historyHashes: [...aiHistoryHashesRef.current],
+      });
+      void promise
+        .then((result) => {
+          if (cancelled || abort.signal.aborted) return;
+          if (!result.move) {
+            setThinking(false);
+            return;
+          }
+          return commitMoveRef.current(result.move).finally(() => {
+            if (!cancelled) setThinking(false);
+          });
+        })
+        .catch(() => {
           if (!cancelled) setThinking(false);
         });
-      } else {
-        setThinking(false);
-      }
-    }, 420);
+    }, 280);
 
     return () => {
       cancelled = true;
+      abort.abort();
       window.clearTimeout(timer);
+      setThinking(false);
     };
     // Intentionally omit commitMove — it is read via commitMoveRef so the
     // 200ms clock tick cannot cancel the AI thinking timer forever.
@@ -945,11 +1000,18 @@ export function DamaGame({
   const offerAiDraw = () => {
     if (mode !== "ai" || !drawEligible || outcome || aiDrawOffered) return;
     setAiDrawOffered(true);
-    // Computer only allows this button when the game looks endless — that is
-    // its agreement condition; it accepts shortly after you offer.
+    setAiDrawDeclined(false);
+    const boardAtOffer = board;
+    // Computer accepts only when equal / slightly worse; rejects when ahead.
     window.setTimeout(() => {
-      setAgreedDraw(true);
-      setForcedDraw(true);
+      const accept = shouldComputerAcceptDraw(boardAtOffer, AI);
+      if (accept) {
+        setAgreedDraw(true);
+        setForcedDraw(true);
+      } else {
+        setAiDrawDeclined(true);
+        window.setTimeout(() => setAiDrawDeclined(false), 2800);
+      }
       setAiDrawOffered(false);
     }, 700);
   };
@@ -958,8 +1020,12 @@ export function DamaGame({
     const s = rematchStake || activeStake || stake;
     setStake(s);
     if (!accessToken) return;
+    if (!isValidDamaStake(s)) {
+      setStakeError(tGlobal("dama.stakeTooLow", { min: String(DAMA_MIN_STAKE) }));
+      return;
+    }
     if (Number(walletBalance) < Number(s)) {
-      setStakeError("Insufficient balance for rematch");
+      setStakeError(tGlobal("dama.rematchInsufficient"));
       return;
     }
     setStakeBusy(true);
@@ -978,7 +1044,7 @@ export function DamaGame({
         result.turn_deadline ?? Date.now() / 1000 + DAMA_TURN_TIMEOUT_SEC,
       );
     } catch {
-      setStakeError("Could not start rematch");
+      setStakeError(tGlobal("dama.rematchFailed"));
     } finally {
       setStakeBusy(false);
     }
@@ -994,21 +1060,21 @@ export function DamaGame({
 
   const resultTitle =
     resultKind === "win"
-      ? "You win!"
+      ? t("dama.youWin")
       : resultKind === "loss"
-        ? "You lost"
-        : "Draw";
+        ? t("dama.youLost")
+        : t("dama.drawTitle");
 
   const resultSubtitle =
     resultKind === "win"
       ? mode === "ai"
-        ? "Nice play — prize credited to your wallet."
-        : "Opponent timed out or you forced the win."
+        ? t("dama.nicePlay")
+        : t("dama.opponentTimeout")
       : resultKind === "loss"
         ? mode === "ai"
-          ? "Computer takes this round. Rematch anytime."
-          : "Better luck next game — propose a rematch."
-        : "Stakes refunded. Ready for another?" ;
+          ? t("dama.computerTakes")
+          : t("dama.betterLuck")
+        : t("dama.stakesRefunded");
 
   const onlineRematchStatus =
     mode === "online" && online.match
@@ -1113,18 +1179,18 @@ export function DamaGame({
             </div>
             <div>
               <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-white/75">
-                Dalamax
+                {t("dama.brand")}
               </p>
-              <h1 className="text-2xl font-black leading-tight">Dama</h1>
+              <h1 className="text-2xl font-black leading-tight">{t("dama.title")}</h1>
               <p className="mt-0.5 text-sm text-white/85">
-                Slide pieces · back-captures · flying kings.
+                {t("dama.subtitle")}
               </p>
             </div>
           </div>
         </header>
 
         <p className="mt-4 px-0.5 text-sm font-medium text-purple-600 dark:text-purple-300/80">
-          Drag a glowing piece along its route. Crowning ends that turn — no instant king eat.
+          {t("dama.howTo")}
         </p>
 
         {savedAiSession && (
@@ -1134,13 +1200,13 @@ export function DamaGame({
             className="mt-3 w-full rounded-3xl bg-gradient-to-r from-amber-500 to-orange-500 p-4 text-left text-white shadow-md transition active:scale-[0.985]"
           >
             <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-white/80">
-              Resume Vs Computer
+              {t("dama.resumeAi")}
             </p>
             <p className="mt-1 text-base font-extrabold">
-              Continue · stake {savedAiSession.stake} ETB
+              {t("dama.continueStake", { stake: savedAiSession.stake })}
             </p>
             <p className="mt-0.5 text-xs font-medium text-white/85">
-              Session kept ~20 min · 2 min per turn
+              {t("dama.sessionKept")}
             </p>
           </button>
         )}
@@ -1157,10 +1223,10 @@ export function DamaGame({
               </div>
               <div className="min-w-0 flex-1">
                 <h2 className="text-lg font-extrabold text-purple-950 dark:text-white">
-                  Vs Computer
+                  {t("dama.vsComputer")}
                 </h2>
                 <p className="text-xs font-medium text-purple-500 dark:text-purple-300/75">
-                  Stake 5 / 10 / 15 or custom · win the pot.
+                  {t("dama.vsComputerHint")}
                 </p>
               </div>
               <Sparkles className="text-orange-400" size={18} />
@@ -1179,12 +1245,12 @@ export function DamaGame({
               </div>
               <div className="min-w-0 flex-1">
                 <h2 className="text-lg font-extrabold text-purple-950 dark:text-white">
-                  Vs Person
+                  {t("dama.vsPerson")}
                 </h2>
                 <p className="text-xs font-medium text-purple-500 dark:text-purple-300/75">
                   {accessToken
-                    ? "Online players · search · challenge & confirm."
-                    : "Sign in to play online against others."}
+                    ? t("dama.vsPersonHint")
+                    : t("dama.signInOnline")}
                 </p>
               </div>
               <Users className="text-violet-400" size={18} />
@@ -1202,10 +1268,10 @@ export function DamaGame({
               </div>
               <div className="min-w-0 flex-1">
                 <h2 className="text-lg font-extrabold text-purple-950 dark:text-white">
-                  Pass & Play
+                  {t("dama.passPlay")}
                 </h2>
                 <p className="text-xs font-medium text-purple-500 dark:text-purple-300/75">
-                  Same device · free · no wallet stake.
+                  {t("dama.passPlayHint")}
                 </p>
               </div>
             </div>
@@ -1224,19 +1290,23 @@ export function DamaGame({
           onClick={() => setPhase("menu")}
           className="mb-3 self-start rounded-xl bg-white/80 px-3 py-1.5 text-xs font-bold text-purple-700 ring-1 ring-purple-100 dark:bg-white/10 dark:text-purple-200 dark:ring-white/10"
         >
-          Back
+          {t("common.back")}
         </button>
         <StakePicker balance={walletBalance} stake={stake} onStakeChange={setStake} />
         {stakeError && (
-          <p className="mt-2 text-center text-xs font-semibold text-rose-600">{stakeError}</p>
+          <p className="mt-2 text-center text-xs font-semibold text-rose-600">{ts(stakeError)}</p>
         )}
         <button
           type="button"
-          disabled={stakeBusy || Number(walletBalance) < Number(stake)}
+          disabled={
+            stakeBusy ||
+            !isValidDamaStake(stake) ||
+            Number(walletBalance) < Number(stake)
+          }
           onClick={() => void confirmAiStake()}
           className="mt-4 rounded-2xl bg-orange-500 px-4 py-3.5 text-sm font-extrabold text-white shadow disabled:opacity-40"
         >
-          {stakeBusy ? "Starting…" : `Play · win up to ${preview.prize} ETB`}
+          {stakeBusy ? t("dama.starting") : t("dama.playWinUpTo", { prize: preview.prize })}
         </button>
       </div>
     );
@@ -1252,7 +1322,7 @@ export function DamaGame({
               onClick={() => setPhase("play")}
               className="w-full rounded-2xl bg-gradient-to-r from-violet-600 to-fuchsia-500 px-4 py-3 text-sm font-extrabold text-white shadow"
             >
-              Return to match · stake {online.match.stake} ETB
+              {t("dama.returnMatch", { stake: online.match.stake })}
             </button>
           </div>
         )}
@@ -1317,15 +1387,15 @@ export function DamaGame({
       {(mode === "ai" || mode === "online") && (
         <div className="mb-2 flex items-center justify-between gap-2 rounded-2xl bg-white/85 px-3 py-2 text-xs font-bold shadow-sm ring-1 ring-purple-100 dark:bg-[#1E1B2E] dark:ring-white/10">
           <span className="tabular-nums text-purple-800 dark:text-purple-100">
-            Wallet{" "}
+            {t("common.wallet")}{" "}
             <span className="text-purple-950 dark:text-white">
               {walletBalance != null ? Number(walletBalance).toFixed(2) : "—"}
             </span>{" "}
-            ETB
+            {t("common.etb")}
           </span>
           <span className="tabular-nums text-orange-600 dark:text-orange-300">
-            Stake {activeStake ?? "—"}
-            {prizePool ? ` · win ${prizePool}` : ""}
+            {t("common.stake")} {activeStake ?? "—"}
+            {prizePool ? t("dama.winAmount", { prize: prizePool }) : ""}
           </span>
         </div>
       )}
@@ -1346,7 +1416,7 @@ export function DamaGame({
           }}
           className="rounded-xl bg-white/80 px-3 py-1.5 text-xs font-bold text-purple-700 ring-1 ring-purple-100 dark:bg-white/10 dark:text-purple-200 dark:ring-white/10"
         >
-          {mode === "online" ? "Lobby" : "Modes"}
+          {mode === "online" ? t("dama.lobby") : t("dama.modes")}
         </button>
         <div className="flex items-center gap-1.5">
           {mode === "local" && (
@@ -1357,7 +1427,7 @@ export function DamaGame({
               className="flex items-center gap-1 rounded-xl bg-white/80 px-2.5 py-1.5 text-xs font-bold text-purple-700 ring-1 ring-purple-100 disabled:opacity-40 dark:bg-white/10 dark:text-purple-200 dark:ring-white/10"
             >
               <RotateCcw size={13} />
-              Undo
+              {t("dama.undo")}
             </button>
           )}
           {mode === "online" && matchId && !outcome ? (
@@ -1370,19 +1440,19 @@ export function DamaGame({
                       onClick={() => online.acceptDraw(matchId)}
                       className="rounded-xl bg-emerald-500 px-2.5 py-1.5 text-xs font-bold text-white shadow"
                     >
-                      Accept draw
+                      {t("dama.acceptDraw")}
                     </button>
                     <button
                       type="button"
                       onClick={() => online.declineDraw(matchId)}
                       className="rounded-xl bg-white/80 px-2.5 py-1.5 text-xs font-bold text-purple-700 ring-1 ring-purple-100 dark:bg-white/10 dark:text-purple-200"
                     >
-                      Decline
+                      {t("common.decline")}
                     </button>
                   </>
                 ) : online.match?.drawOfferBy === userId ? (
                   <span className="rounded-xl bg-amber-100 px-2.5 py-1.5 text-xs font-bold text-amber-800 dark:bg-amber-950/40 dark:text-amber-200">
-                    Draw offered…
+                    {t("dama.drawOffered")}
                   </span>
                 ) : (
                   <button
@@ -1390,7 +1460,7 @@ export function DamaGame({
                     onClick={() => online.offerDraw(matchId)}
                     className="rounded-xl bg-sky-500 px-2.5 py-1.5 text-xs font-bold text-white shadow"
                   >
-                    Offer draw
+                    {t("dama.offerDraw")}
                   </button>
                 )
               )}
@@ -1399,7 +1469,7 @@ export function DamaGame({
                 onClick={() => setConfirmAction("resign")}
                 className="rounded-xl bg-rose-500 px-2.5 py-1.5 text-xs font-bold text-white shadow"
               >
-                Resign
+                {t("dama.resign")}
               </button>
             </>
           ) : mode === "ai" && !outcome && drawEligible ? (
@@ -1408,16 +1478,16 @@ export function DamaGame({
                 type="button"
                 disabled={aiDrawOffered}
                 onClick={offerAiDraw}
-                className="rounded-xl bg-sky-500 px-2.5 py-1.5 text-xs font-bold text-white shadow disabled:opacity-50"
+                className="rounded-xl bg-sky-500/90 px-2.5 py-1.5 text-xs font-bold text-white shadow-sm ring-1 ring-sky-600/20 disabled:cursor-wait disabled:opacity-70 dark:bg-sky-600/80 dark:ring-sky-400/20"
               >
-                {aiDrawOffered ? "Computer deciding…" : "Offer draw"}
+                {aiDrawOffered ? t("dama.computerDeciding") : t("dama.offerDraw")}
               </button>
               <button
                 type="button"
                 onClick={() => setConfirmAction("resign")}
                 className="rounded-xl bg-rose-500 px-2.5 py-1.5 text-xs font-bold text-white shadow"
               >
-                Resign
+                {t("dama.resign")}
               </button>
             </>
           ) : mode === "ai" && !outcome ? (
@@ -1426,7 +1496,7 @@ export function DamaGame({
               onClick={() => setConfirmAction("resign")}
               className="rounded-xl bg-rose-500 px-2.5 py-1.5 text-xs font-bold text-white shadow"
             >
-              Resign
+              {t("dama.resign")}
             </button>
           ) : mode !== "online" ? (
             <button
@@ -1434,7 +1504,7 @@ export function DamaGame({
               onClick={() => setConfirmAction("new")}
               className="rounded-xl bg-orange-500 px-2.5 py-1.5 text-xs font-bold text-white shadow"
             >
-              New
+              {t("dama.new")}
             </button>
           ) : (
             <button
@@ -1445,7 +1515,7 @@ export function DamaGame({
               }}
               className="rounded-xl bg-orange-500 px-2.5 py-1.5 text-xs font-bold text-white shadow"
             >
-              Find opponent
+              {t("dama.findOpponent")}
             </button>
           )}
         </div>
@@ -1461,8 +1531,11 @@ export function DamaGame({
         >
           <Timer size={14} />
           {turnLeftSec <= 0
-            ? "Time up…"
-            : `${Math.floor(turnLeftSec / 60)}:${String(turnLeftSec % 60).padStart(2, "0")} left this turn`}
+            ? t("dama.timeUp")
+            : t("dama.timeLeft", {
+                minutes: Math.floor(turnLeftSec / 60),
+                seconds: String(turnLeftSec % 60).padStart(2, "0"),
+              })}
         </div>
       )}
 
@@ -1651,7 +1724,7 @@ export function DamaGame({
 
       {mode === "online" && mySide && (
         <div className="mt-2">
-          {renderSideCard(mySide, `You · ${sideLabel(mySide, mode, onlineNames)}`)}
+          {renderSideCard(mySide, t("dama.youSide", { side: sideLabel(mySide, mode, onlineNames) }))}
         </div>
       )}
 
@@ -1663,24 +1736,28 @@ export function DamaGame({
         ) : thinking ? (
           <span className="inline-flex items-center gap-2">
             <Bot size={15} className="animate-pulse" />
-            Computer is thinking…
+            {t("dama.computerThinking")}
           </span>
         ) : animating ? (
-          <span>Jumping…</span>
+          <span>{t("dama.jumping")}</span>
         ) : mode === "online" && mySide && turn !== mySide ? (
-          <span>Waiting for {sideLabel(turn, mode, onlineNames)}…</span>
+          <span>{t("dama.waitingFor", { name: sideLabel(turn, mode, onlineNames) })}</span>
         ) : mode === "online" && online.match?.drawOfferBy === userId ? (
-          <span>Waiting for opponent to accept your draw…</span>
+          <span>{t("dama.waitingDrawOpponent")}</span>
         ) : mode === "ai" && aiDrawOffered ? (
-          <span>Computer is considering your draw offer…</span>
-        ) : drawEligible && !outcome ? (
-          <span>Game looks long — you can offer a draw</span>
+          <span>{t("dama.waitingDrawComputer")}</span>
+        ) : mode === "ai" && aiDrawDeclined ? (
+          <span className="text-amber-700 dark:text-amber-300">{t("dama.drawDeclined")}</span>
+        ) : mode === "online" && drawEligible && !outcome ? (
+          <span>{t("dama.gameLong")}</span>
+        ) : mode === "ai" && drawEligible && !outcome ? (
+          <span>{t("dama.drawAvailable")}</span>
         ) : (
           <span>
-            {sideLabel(turn, mode, onlineNames)} to move
-            {moves.some((m) => m.captures.length > 0) ? " · capture required" : ""}
+            {t("dama.toMove", { name: sideLabel(turn, mode, onlineNames) })}
+            {moves.some((m) => m.captures.length > 0) ? t("dama.captureRequired") : ""}
             {" · "}
-            slide a glowing piece
+            {t("dama.slideGlowing")}
           </span>
         )}
       </div>
@@ -1689,26 +1766,26 @@ export function DamaGame({
         open={confirmAction != null}
         title={
           confirmAction === "resign"
-            ? "Resign this game?"
+            ? t("dama.resignConfirm")
             : confirmAction === "new"
-              ? "Start a new game?"
-              : "Leave to modes?"
+              ? t("dama.newConfirm")
+              : t("dama.leaveConfirm")
         }
         message={
           confirmAction === "resign"
-            ? "You will forfeit the stake. This cannot be undone."
+            ? t("dama.resignBody")
             : confirmAction === "new"
               ? mode === "ai" && !outcome
-                ? "Your current staked game will count as a loss."
-                : "Leave this board and start over."
-              : "Your Vs Computer game is saved for about 20 minutes so you can continue."
+                ? t("dama.newBody")
+                : t("dama.leaveBody")
+              : t("dama.leaveBodySaved")
         }
         confirmLabel={
           confirmAction === "resign"
-            ? "Resign"
+            ? t("dama.resign")
             : confirmAction === "new"
-              ? "New game"
-              : "Leave"
+              ? t("dama.newGame")
+              : t("dama.leave")
         }
         danger={confirmAction === "resign" || confirmAction === "new"}
         onCancel={() => setConfirmAction(null)}
@@ -1777,6 +1854,7 @@ function SideCard({
   turnMs: number;
   totalMs: number;
 }) {
+  const { t } = useI18n();
   return (
     <div
       className={`rounded-2xl px-3 py-2 shadow-sm ring-1 transition ${
@@ -1794,21 +1872,23 @@ function SideCard({
         </div>
         {thinking ? (
           <span className="text-[10px] font-bold uppercase tracking-wide text-orange-600">
-            Thinking
+            {t("dama.thinking")}
           </span>
         ) : active ? (
           <span className="text-[10px] font-bold uppercase tracking-wide text-teal-700">
-            Turn
+            {t("dama.turn")}
           </span>
         ) : null}
       </div>
       <p className="mt-1 text-[11px] font-medium text-stone-600">
-        {men} men · {kings} king{kings === 1 ? "" : "s"}
+        {t("dama.pieceStats", { count: kings, men, kings })}
       </p>
       <div className="mt-1 flex items-center gap-1 text-[11px] font-bold tabular-nums text-stone-800">
         <Timer size={12} className={active ? "text-teal-700" : "text-stone-400"} />
         <span>{formatClock(active ? turnMs : 0)}</span>
-        <span className="font-medium text-stone-500">· total {formatClock(totalMs)}</span>
+        <span className="font-medium text-stone-500">
+          {t("dama.totalTime", { time: formatClock(totalMs) })}
+        </span>
       </div>
     </div>
   );

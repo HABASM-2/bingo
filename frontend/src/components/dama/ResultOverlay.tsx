@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Crown, Frown, Handshake, Sparkles, Trophy, WifiOff } from "lucide-react";
-import { StakePicker } from "./StakePicker";
+import { useI18n } from "../../i18n";
+import { StakePicker, isValidDamaStake } from "./StakePicker";
 
 export type ResultKind = "win" | "loss" | "draw";
 
@@ -36,6 +37,7 @@ export function ResultOverlay({
   onClose,
   busy = false,
 }: ResultOverlayProps) {
+  const { t } = useI18n();
   const [showStake, setShowStake] = useState(false);
 
   const shell =
@@ -69,7 +71,11 @@ export function ResultOverlay({
               <Icon size={32} strokeWidth={2.2} />
             </div>
             <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-white/75">
-              {kind === "win" ? "Victory" : kind === "loss" ? "Defeat" : "Draw"}
+              {kind === "win"
+                ? t("dama.victory")
+                : kind === "loss"
+                  ? t("dama.defeat")
+                  : t("dama.drawTitle")}
             </p>
             <h2 className="mt-1 text-2xl font-black leading-tight">{title}</h2>
             <p className="mt-1.5 max-w-xs text-sm font-medium text-white/90">{subtitle}</p>
@@ -77,18 +83,18 @@ export function ResultOverlay({
               <div className="mt-4 flex flex-wrap items-center justify-center gap-2">
                 {stake && (
                   <span className="rounded-full bg-black/20 px-3 py-1 text-xs font-bold">
-                    Stake {stake} ETB
+                    {t("dama.stakeEtb", { stake })}
                   </span>
                 )}
                 {kind === "win" && prizePool && (
                   <span className="inline-flex items-center gap-1 rounded-full bg-white/25 px-3 py-1 text-xs font-extrabold">
                     <Sparkles size={12} />
-                    +{prizePool} ETB
+                    {t("dama.prizeEtb", { prize: prizePool })}
                   </span>
                 )}
                 {kind === "draw" && stake && (
                   <span className="rounded-full bg-white/25 px-3 py-1 text-xs font-bold">
-                    Stake refunded
+                    {t("dama.stakeRefunded")}
                   </span>
                 )}
               </div>
@@ -99,17 +105,14 @@ export function ResultOverlay({
         <div className="space-y-3 px-4 py-4">
           {rematchStatus === "offered_by_them" && (
             <div className="rounded-2xl bg-orange-500 px-3 py-2.5 text-center text-sm font-extrabold text-white shadow animate-pulse">
-              Rematch offer · {rematchStake} ETB — respond now
+              {t("dama.rematchOffer", { stake: rematchStake })}
             </div>
           )}
 
           {peerLeft && (
             <div className="flex items-start gap-2 rounded-2xl bg-rose-50 px-3 py-3 text-sm font-bold text-rose-700 dark:bg-rose-950/50 dark:text-rose-200">
               <WifiOff size={18} className="mt-0.5 shrink-0" />
-              <span>
-                Opponent left this session. Your rematch offer was not delivered — find
-                them again in the lobby when they return.
-              </span>
+              <span>{t("dama.opponentLeft")}</span>
             </div>
           )}
 
@@ -120,15 +123,17 @@ export function ResultOverlay({
                 onClick={() => setShowStake((v) => !v)}
                 className="w-full rounded-2xl bg-purple-50 py-2 text-xs font-bold text-purple-700 dark:bg-white/5 dark:text-purple-200"
               >
-                {showStake ? "Hide stake options" : `Rematch stake · ${rematchStake} ETB`}
+                {showStake
+                  ? t("dama.hideStakeOptions")
+                  : t("dama.rematchStakeLabel", { stake: rematchStake })}
               </button>
               {showStake && (
                 <StakePicker
                   balance={balance}
                   stake={rematchStake}
                   onStakeChange={onRematchStakeChange}
-                  title="Rematch stake"
-                  subtitle="Both players must agree. You can change the amount."
+                  title={t("dama.rematchStake")}
+                  subtitle={t("dama.rematchAgree")}
                 />
               )}
               {rematchStatus === "offered_by_them" && onAcceptRematch ? (
@@ -139,21 +144,27 @@ export function ResultOverlay({
                   className="flex w-full items-center justify-center gap-2 rounded-2xl bg-orange-500 py-3.5 text-sm font-extrabold text-white shadow ring-2 ring-orange-300 ring-offset-2 disabled:opacity-40 dark:ring-offset-[#16122A]"
                 >
                   <Crown size={16} />
-                  Accept rematch · {rematchStake} ETB
+                  {t("dama.acceptRematch", { stake: rematchStake })}
                 </button>
               ) : rematchStatus === "offered_by_me" ? (
                 <p className="rounded-2xl bg-amber-50 py-3 text-center text-xs font-bold text-amber-800 ring-2 ring-amber-300 dark:bg-amber-950/40 dark:text-amber-200 dark:ring-amber-600/50">
-                  Rematch sent — waiting for opponent…
+                  {t("dama.rematchSent")}
                 </p>
               ) : (
                 <button
                   type="button"
-                  disabled={busy || Number(balance) < Number(rematchStake)}
+                  disabled={
+                    busy ||
+                    !isValidDamaStake(rematchStake) ||
+                    Number(balance) < Number(rematchStake)
+                  }
                   onClick={onProposeRematch}
                   className="flex w-full items-center justify-center gap-2 rounded-2xl bg-orange-500 py-3.5 text-sm font-extrabold text-white shadow disabled:opacity-40"
                 >
                   <Crown size={16} />
-                  {peerLeft ? "Propose rematch again" : `Propose rematch · ${rematchStake} ETB`}
+                  {peerLeft
+                    ? t("dama.proposeRematchAgain")
+                    : t("dama.proposeRematch", { stake: rematchStake })}
                 </button>
               )}
             </>
@@ -164,7 +175,7 @@ export function ResultOverlay({
             onClick={onClose}
             className="w-full rounded-2xl bg-stone-100 py-3 text-sm font-bold text-stone-700 dark:bg-white/10 dark:text-purple-100"
           >
-            Back to modes
+            {t("dama.backToModes")}
           </button>
         </div>
       </div>

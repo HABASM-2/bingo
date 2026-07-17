@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { WifiOff, X } from "lucide-react";
+import { useI18n } from "../../i18n";
 import type { WebSocketStatus } from "../../hooks/useWebSocket";
 
 interface NetworkAlertProps {
@@ -45,6 +46,7 @@ export function NetworkAlert({
   reconnectAttempt,
   latencyMs,
 }: NetworkAlertProps) {
+  const { t } = useI18n();
   const [online, setOnline] = useState(() => navigator.onLine);
   const [rawWeak, setRawWeak] = useState(isWeakConnection);
   const [stableWeak, setStableWeak] = useState(false);
@@ -122,8 +124,8 @@ export function NetworkAlert({
   if (!hasIssue || dismissed) return null;
 
   const message = !online
-    ? "You are offline. Check your internet connection."
-    : "Weak network detected. Move to a stronger connection to avoid missing calls.";
+    ? t("network.offline")
+    : t("network.weak");
 
   return (
     <div className="fixed left-1/2 top-3 z-[60] flex w-[92%] max-w-sm -translate-x-1/2 items-center gap-2 rounded-2xl bg-amber-500 py-3 pl-4 pr-2 text-sm font-bold text-amber-950 shadow-xl ring-1 ring-amber-300">
@@ -133,7 +135,7 @@ export function NetworkAlert({
         type="button"
         onClick={() => setDismissed(true)}
         className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-950/10 transition hover:bg-amber-950/20 active:scale-90"
-        aria-label="Dismiss network warning"
+        aria-label={t("network.dismissAria")}
       >
         <X size={18} strokeWidth={2.5} />
       </button>

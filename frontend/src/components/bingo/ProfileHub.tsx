@@ -4,6 +4,8 @@ import { getBingoHistory } from "../../services/bingo";
 import { getDamaHistory } from "../../services/dama";
 import type { GameHistoryEntry } from "../../types/bingo";
 import type { DamaHistoryEntry } from "../../types/dama";
+import { useI18n } from "../../i18n";
+import { LanguagePreference } from "./LanguagePreference";
 import { ThemePreference } from "./ThemePreference";
 
 const PAGE_SIZE = 10;
@@ -22,27 +24,14 @@ function formatBalance(balance: string | null): string {
   return Number.isFinite(n) ? n.toFixed(2) : balance;
 }
 
-function formatWhen(iso: string | null): string {
-  if (!iso) return "";
-  try {
-    return new Date(iso).toLocaleDateString(undefined, {
-      month: "short",
-      day: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-    });
-  } catch {
-    return "";
-  }
-}
-
 export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) {
+  const { t, formatDate } = useI18n();
   const [tab, setTab] = useState<HistoryTab>("bingo");
   const [bingoGames, setBingoGames] = useState<GameHistoryEntry[] | null>(null);
   const [damaGames, setDamaGames] = useState<DamaHistoryEntry[] | null>(null);
   const [bingoMeta, setBingoMeta] = useState({ total: 0, played: 0, wins: 0 });
   const [damaMeta, setDamaMeta] = useState({ total: 0, played: 0, wins: 0 });
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState(false);
   const [loading, setLoading] = useState(true);
   const [page, setPage] = useState(0);
 
@@ -63,7 +52,7 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
     let cancelled = false;
 
     setLoading(true);
-    setError(null);
+    setError(false);
 
     const loader =
       tab === "bingo"
@@ -89,7 +78,7 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
     loader
       .catch(() => {
         if (!cancelled) {
-          setError("Could not load your game history.");
+          setError(true);
           if (tab === "bingo") setBingoGames([]);
           else setDamaGames([]);
         }
@@ -117,7 +106,9 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
             {initial}
           </div>
           <div className="min-w-0">
-            <p className="text-xs font-semibold uppercase tracking-wider text-white/70">Profile</p>
+            <p className="text-xs font-semibold uppercase tracking-wider text-white/70">
+              {t("profile.title")}
+            </p>
             <h1 className="truncate text-xl font-black">{firstName}</h1>
           </div>
         </div>
@@ -125,12 +116,14 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
         <div className="relative mt-4 grid grid-cols-2 gap-2">
           <div className="rounded-2xl bg-white/15 px-3 py-2.5 backdrop-blur-sm ring-1 ring-white/20">
             <p className="text-[10px] font-semibold uppercase tracking-wide text-white/70">
-              {tab === "bingo" ? "Bingo played" : "Dama played"}
+              {tab === "bingo" ? t("profile.bingoPlayed") : t("profile.damaPlayed")}
             </p>
             <p className="text-lg font-extrabold tabular-nums">{meta.played}</p>
           </div>
           <div className="rounded-2xl bg-white/15 px-3 py-2.5 backdrop-blur-sm ring-1 ring-white/20">
-            <p className="text-[10px] font-semibold uppercase tracking-wide text-white/70">Wins</p>
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-white/70">
+              {t("profile.wins")}
+            </p>
             <p className="text-lg font-extrabold tabular-nums">{meta.wins}</p>
           </div>
         </div>
@@ -141,15 +134,15 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
           <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-violet-500/15 text-violet-700 dark:text-violet-300">
             <Wallet size={16} />
           </div>
-          <h2 className="text-sm font-bold text-purple-900 dark:text-white">Wallet</h2>
+          <h2 className="text-sm font-bold text-purple-900 dark:text-white">{t("common.wallet")}</h2>
         </div>
 
         <p className="text-3xl font-black tabular-nums text-purple-950 dark:text-white">
           {formatBalance(balance)}
-          <span className="ml-1.5 text-base font-bold text-purple-400">ETB</span>
+          <span className="ml-1.5 text-base font-bold text-purple-400">{t("common.etb")}</span>
         </p>
         <p className="mt-1 text-xs text-purple-500 dark:text-purple-300">
-          Bingo boards · {boardPrice} ETB · Dama stakes 5 / 10 / 15+
+          {t("profile.walletHint", { price: boardPrice })}
         </p>
       </section>
 
@@ -158,12 +151,18 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
       </section>
 
       <section className="rounded-3xl bg-white/90 p-4 shadow-sm ring-1 ring-purple-100/80 dark:bg-[#1E1B2E] dark:ring-white/10">
+        <LanguagePreference />
+      </section>
+
+      <section className="rounded-3xl bg-white/90 p-4 shadow-sm ring-1 ring-purple-100/80 dark:bg-[#1E1B2E] dark:ring-white/10">
         <div className="mb-3 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2">
             <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-orange-500/15 text-orange-600 dark:text-orange-300">
               <Trophy size={16} />
             </div>
-            <h2 className="text-sm font-bold text-purple-900 dark:text-white">Recent games</h2>
+            <h2 className="text-sm font-bold text-purple-900 dark:text-white">
+              {t("profile.recentGames")}
+            </h2>
           </div>
 
           {meta.total > PAGE_SIZE && (
@@ -173,7 +172,7 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
                 disabled={page <= 0 || loading}
                 onClick={() => setPage((p) => Math.max(0, p - 1))}
                 className="flex h-8 w-8 items-center justify-center rounded-xl bg-purple-100 text-purple-700 transition disabled:opacity-35 dark:bg-white/10 dark:text-purple-200"
-                aria-label="Previous page"
+                aria-label={t("profile.prevPage")}
               >
                 <ChevronLeft size={16} />
               </button>
@@ -185,7 +184,7 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
                 disabled={page >= totalPages - 1 || loading}
                 onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
                 className="flex h-8 w-8 items-center justify-center rounded-xl bg-purple-100 text-purple-700 transition disabled:opacity-35 dark:bg-white/10 dark:text-purple-200"
-                aria-label="Next page"
+                aria-label={t("profile.nextPage")}
               >
                 <ChevronRight size={16} />
               </button>
@@ -203,7 +202,7 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
                 : "text-purple-500"
             }`}
           >
-            Bingo
+            {t("nav.bingo")}
           </button>
           <button
             type="button"
@@ -215,11 +214,11 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
             }`}
           >
             <Crown size={12} />
-            Dama
+            {t("nav.dama")}
           </button>
         </div>
 
-        {error && <p className="py-4 text-center text-sm text-red-500">{error}</p>}
+        {error && <p className="py-4 text-center text-sm text-red-500">{t("profile.historyError")}</p>}
 
         {!error && loading && (
           <div className="flex justify-center py-8">
@@ -229,9 +228,7 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
 
         {!error && !loading && games && games.length === 0 && (
           <p className="py-6 text-center text-sm text-purple-500 dark:text-purple-300">
-            {tab === "bingo"
-              ? "No Bingo rounds yet — pick a board to start."
-              : "No Dama matches yet — stake vs computer or challenge online."}
+            {tab === "bingo" ? t("profile.noBingo") : t("profile.noDama")}
           </p>
         )}
 
@@ -261,27 +258,44 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
                       #{game.game_id}
                     </p>
                     <p className="text-[11px] text-purple-500 dark:text-purple-300">
-                      {game.boards_count} board{game.boards_count === 1 ? "" : "s"} · Stake{" "}
-                      {Number(game.stake).toFixed(0)} · {game.total_boards} player
-                      {game.total_boards === 1 ? "" : "s"}
+                      {t("profile.boardsStakePlayers", {
+                        count: game.boards_count,
+                        boards: game.boards_count,
+                        stake: Number(game.stake).toFixed(0),
+                        players: game.total_boards,
+                      })}
                     </p>
                     {hasWinners ? (
                       <p className="truncate text-[11px] font-semibold text-orange-500 dark:text-orange-300">
                         {winnerNames.length > 0
-                          ? `Winner${winnerNames.length === 1 ? "" : "s"}: ${winnerNames.join(", ")}`
-                          : "Winners"}
+                          ? t(winnerNames.length === 1 ? "profile.winnerNamed" : "profile.winnersNamed", {
+                              names: winnerNames.join(", "),
+                            })
+                          : t("profile.winners")}
                         {" · "}
-                        {winnerCount} total
+                        {t("profile.winnersTotal", { count: winnerCount })}
                       </p>
                     ) : (
-                      <p className="text-[11px] text-purple-400">No winner</p>
+                      <p className="text-[11px] text-purple-400">{t("profile.noWinner")}</p>
                     )}
                     <p className="text-[10px] text-purple-400">
-                      Pot {Number.isFinite(gross) ? gross.toFixed(0) : game.derash}
                       {fee > 0
-                        ? ` · Fee -${fee.toFixed(0)} · Prize ${Number.isFinite(prize) ? prize.toFixed(0) : prize}`
+                        ? t("profile.potFeePrize", {
+                            pot: Number.isFinite(gross) ? gross.toFixed(0) : game.derash,
+                            fee: fee.toFixed(0),
+                            prize: Number.isFinite(prize) ? prize.toFixed(0) : prize,
+                          })
+                        : t("profile.potOnly", {
+                            pot: Number.isFinite(gross) ? gross.toFixed(0) : game.derash,
+                          })}
+                      {game.created_at
+                        ? ` · ${formatDate(game.created_at, {
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}`
                         : ""}
-                      {game.created_at ? ` · ${formatWhen(game.created_at)}` : ""}
                     </p>
                   </div>
                   <div className="shrink-0 text-right">
@@ -291,7 +305,7 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
                           +{Number.isFinite(wonAmount) ? wonAmount.toFixed(0) : game.amount_won}
                         </p>
                         <p className="text-[10px] font-medium text-green-600/80 dark:text-green-400/80">
-                          net win
+                          {t("profile.netWin")}
                         </p>
                       </>
                     ) : (
@@ -300,7 +314,9 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
                           -{Number(game.stake).toFixed(0)}
                         </p>
                         <p className="text-[10px] text-purple-400">
-                          Prize {Number.isFinite(prize) ? prize.toFixed(0) : "—"}
+                          {t("profile.prizeAmount", {
+                            prize: Number.isFinite(prize) ? prize.toFixed(0) : "—",
+                          })}
                         </p>
                       </>
                     )}
@@ -326,15 +342,26 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
                       #{game.game_id}
                     </p>
                     <p className="text-[11px] text-purple-500 dark:text-purple-300">
-                      {game.mode === "ai" ? "Vs Computer" : "Online"} · Stake{" "}
-                      {Number.isFinite(stake) ? stake.toFixed(0) : game.stake} ETB
+                      {game.mode === "ai" ? t("profile.vsComputer") : t("profile.online")} ·{" "}
+                      {t("common.stake")} {Number.isFinite(stake) ? stake.toFixed(0) : game.stake}{" "}
+                      {t("common.etb")}
                     </p>
                     <p className="text-[10px] text-purple-400">
-                      Pot {Number(game.pot).toFixed(0)}
                       {Number(game.system_fee) > 0
-                        ? ` · Fee -${Number(game.system_fee).toFixed(0)} · Prize ${Number(game.prize_pool).toFixed(0)}`
+                        ? t("profile.potFeePrize", {
+                            pot: Number(game.pot).toFixed(0),
+                            fee: Number(game.system_fee).toFixed(0),
+                            prize: Number(game.prize_pool).toFixed(0),
+                          })
+                        : t("profile.potOnly", { pot: Number(game.pot).toFixed(0) })}
+                      {game.created_at
+                        ? ` · ${formatDate(game.created_at, {
+                            month: "short",
+                            day: "numeric",
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          })}`
                         : ""}
-                      {game.created_at ? ` · ${formatWhen(game.created_at)}` : ""}
                     </p>
                   </div>
                   <div className="shrink-0 text-right">
@@ -343,21 +370,21 @@ export function ProfileHub({ firstName, balance, boardPrice }: ProfileHubProps) 
                         <p className="text-sm font-extrabold text-sky-600 dark:text-sky-300">
                           ±0
                         </p>
-                        <p className="text-[10px] text-purple-400">refund</p>
+                        <p className="text-[10px] text-purple-400">{t("common.refund")}</p>
                       </>
                     ) : game.is_winner ? (
                       <>
                         <p className="text-sm font-extrabold text-green-600 dark:text-green-400">
                           +{Number.isFinite(wonAmount) ? wonAmount.toFixed(0) : game.amount_won}
                         </p>
-                        <p className="text-[10px] font-medium text-green-600/80">win</p>
+                        <p className="text-[10px] font-medium text-green-600/80">{t("common.win")}</p>
                       </>
                     ) : (
                       <>
                         <p className="text-sm font-semibold text-red-400">
                           -{Number.isFinite(stake) ? stake.toFixed(0) : game.stake}
                         </p>
-                        <p className="text-[10px] text-purple-400">loss</p>
+                        <p className="text-[10px] text-purple-400">{t("common.loss")}</p>
                       </>
                     )}
                   </div>

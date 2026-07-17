@@ -25,6 +25,12 @@ from app.models import (  # noqa: F401
     DamaGameResult,
     AviatorRound,
     AviatorBet,
+    PlinkoPlay,
+    LottoRound,
+    LottoReservation,
+    LottoReservationRequest,
+    LottoWinner,
+    AdminAuditLog,
 )
 
 print("TABLES FOUND BY ALEMBIC:")

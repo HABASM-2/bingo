@@ -1,8 +1,10 @@
 import { Monitor, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
+import { useI18n } from "../i18n";
 
 export function ThemeToggle() {
   const { theme, setTheme } = useTheme();
+  const { t } = useI18n();
 
   const itemStyle = (value: string) =>
     `
@@ -38,12 +40,12 @@ export function ThemeToggle() {
     >
       <button onClick={() => setTheme("light")} className={itemStyle("light")}>
         <Sun size={18} />
-        Light
+        {t("theme.light")}
       </button>
 
       <button onClick={() => setTheme("dark")} className={itemStyle("dark")}>
         <Moon size={18} />
-        Dark
+        {t("theme.dark")}
       </button>
 
       <button
@@ -51,7 +53,7 @@ export function ThemeToggle() {
         className={itemStyle("system")}
       >
         <Monitor size={18} />
-        System
+        {t("theme.system")}
       </button>
     </div>
   );

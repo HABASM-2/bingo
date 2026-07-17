@@ -1,16 +1,18 @@
 import { Monitor, Moon, Sun } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
+import { useI18n } from "../../i18n";
 
 const OPTIONS = [
-  { id: "system", label: "System", icon: Monitor },
-  { id: "light", label: "Light", icon: Sun },
-  { id: "dark", label: "Dark", icon: Moon },
-] as const;
+  { id: "system", labelKey: "theme.system" as const, icon: Monitor },
+  { id: "light", labelKey: "theme.light" as const, icon: Sun },
+  { id: "dark", labelKey: "theme.dark" as const, icon: Moon },
+];
 
 /** Compact theme control for the Profile tab — system is default via ThemeProvider. */
 export function ThemePreference() {
   const { theme, setTheme } = useTheme();
+  const { t } = useI18n();
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -22,10 +24,10 @@ export function ThemePreference() {
   return (
     <div className="w-full max-w-sm">
       <p className="mb-2 text-left text-xs font-semibold uppercase tracking-wide text-purple-500 dark:text-purple-300">
-        Appearance
+        {t("settings.appearance")}
       </p>
       <div className="grid grid-cols-3 gap-2 rounded-2xl bg-white/80 p-1.5 ring-1 ring-purple-100 dark:bg-white/5 dark:ring-white/10">
-        {OPTIONS.map(({ id, label, icon: Icon }) => {
+        {OPTIONS.map(({ id, labelKey, icon: Icon }) => {
           const selected = active === id;
 
           return (
@@ -40,7 +42,7 @@ export function ThemePreference() {
               }`}
             >
               <Icon size={18} />
-              {label}
+              {t(labelKey)}
             </button>
           );
         })}

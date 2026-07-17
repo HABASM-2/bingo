@@ -1,5 +1,6 @@
 import { BoardGrid } from "./BoardGrid";
 import { Cartela } from "./Cartela";
+import { useI18n } from "../../i18n";
 
 interface LobbyViewProps {
   secondsLeft: number;
@@ -57,6 +58,7 @@ export function LobbyView({
   onToggleBoard,
   onDeselectAll,
 }: LobbyViewProps) {
+  const { t } = useI18n();
   const mine = new Set(myBoards);
   const taken = new Set(takenBoards);
   const price = Number(boardPrice);
@@ -72,18 +74,18 @@ export function LobbyView({
     <div className="flex flex-col gap-3 px-3 py-3 animate-[fadeIn_0.35s_ease-out]">
       <div className="flex gap-2.5">
         <StatCard
-          label="Starting in"
+          label={t("bingo.startingIn")}
           value={String(secondsLeft)}
           valueClass="text-orange-500"
           accent
         />
         <StatCard
-          label="Wallet"
+          label={t("common.wallet")}
           value={formatBalance(balance)}
           valueClass="text-purple-900 dark:text-white"
         />
         <StatCard
-          label="Stake"
+          label={t("common.stake")}
           value={boardPrice}
           valueClass="text-purple-900 dark:text-white"
         />
@@ -91,7 +93,10 @@ export function LobbyView({
 
       <div className="flex items-center justify-between rounded-xl bg-white/60 px-3 py-2 ring-1 ring-purple-100 dark:bg-white/5 dark:ring-white/10">
         <span className="text-sm font-bold text-green-600 dark:text-green-400">
-          Boards {myBoards.length}/{Math.min(maxBoards, affordableMax)}
+          {t("bingo.boardsProgress", {
+            current: myBoards.length,
+            max: Math.min(maxBoards, affordableMax),
+          })}
         </span>
         {myBoards.length > 0 ? (
           <button
@@ -99,12 +104,12 @@ export function LobbyView({
             onClick={onDeselectAll}
             className="text-xs font-semibold text-purple-700 underline-offset-2 hover:underline dark:text-purple-300"
           >
-            Deselect all
+            {t("bingo.deselectAll")}
           </button>
         ) : affordableMax <= 0 ? (
-          <span className="text-[11px] font-medium text-red-500">Need balance to play</span>
+          <span className="text-[11px] font-medium text-red-500">{t("bingo.needBalance")}</span>
         ) : (
-          <span className="text-[11px] font-medium text-purple-400">Tap a board to join</span>
+          <span className="text-[11px] font-medium text-purple-400">{t("bingo.tapToJoin")}</span>
         )}
       </div>
 
@@ -126,7 +131,7 @@ export function LobbyView({
               className="flex flex-col gap-1 animate-[fadeIn_0.3s_ease-out]"
             >
               <span className="text-center text-xs font-bold text-green-600 dark:text-green-400">
-                Cartela #{boardId}
+                {t("bingo.cartela", { id: boardId })}
               </span>
               <Cartela boardId={boardId} variant="preview" size={previewSize} />
             </div>
@@ -136,7 +141,7 @@ export function LobbyView({
 
       {myBoards.length === 0 && (
         <p className="pt-1 text-center text-sm text-purple-500 dark:text-purple-300/80">
-          Pick up to {maxBoards} boards before the countdown ends to join the round.
+          {t("bingo.pickBoards", { max: maxBoards })}
         </p>
       )}
     </div>

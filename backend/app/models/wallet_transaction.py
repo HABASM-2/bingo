@@ -5,6 +5,7 @@ from datetime import datetime
 from sqlalchemy import (
     DateTime,
     ForeignKey,
+    Index,
     Numeric,
     String,
     func,
@@ -75,7 +76,10 @@ class WalletTransaction(Base):
 class Deposit(Base):
 
     __tablename__ = "deposits"
-
+    __table_args__ = (
+        Index("ix_deposits_created_at", "created_at"),
+        Index("ix_deposits_user_created", "user_id", "created_at"),
+    )
 
     id: Mapped[int] = mapped_column(
         primary_key=True
@@ -83,7 +87,7 @@ class Deposit(Base):
 
 
     user_id = mapped_column(
-        ForeignKey("users.id")
+        ForeignKey("users.id"),
     )
 
 

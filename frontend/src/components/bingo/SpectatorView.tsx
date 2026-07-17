@@ -1,4 +1,5 @@
 import type { RoomStateMessage } from "../../types/bingo";
+import { useI18n } from "../../i18n";
 import { CalledColumns } from "./CalledColumns";
 import { CurrentCall } from "./CurrentCall";
 
@@ -40,13 +41,14 @@ export function SpectatorView({
   onEnableAudio,
   winHold = false,
 }: SpectatorViewProps) {
+  const { t } = useI18n();
   return (
     <div className="flex flex-1 flex-col overflow-hidden animate-[fadeIn_0.3s_ease-out]">
       <div className="flex gap-1.5 px-2 py-2">
-        <Stat label="Game ID" value={room.game_id ?? "—"} />
-        <Stat label="Derash" value={room.derash} valueClass="text-green-600 dark:text-green-400" />
-        <Stat label="Players" value={String(room.players_in_round)} />
-        <Stat label="Call" value={String(drawn.length)} />
+        <Stat label={t("bingo.gameId")} value={room.game_id ?? "—"} />
+        <Stat label={t("bingo.derash")} value={room.derash} valueClass="text-green-600 dark:text-green-400" />
+        <Stat label={t("common.players")} value={String(room.players_in_round)} />
+        <Stat label={t("bingo.call")} value={String(drawn.length)} />
       </div>
 
       <div className="flex flex-1 gap-2 overflow-y-auto px-2 pb-2">
@@ -71,16 +73,16 @@ export function SpectatorView({
 
           {winHold && (
             <p className="animate-pulse text-center text-sm font-bold text-orange-500">
-              BINGO! Showing the last call…
+              {t("bingo.winHoldSpectator")}
             </p>
           )}
 
           <div className="flex flex-1 items-center justify-center rounded-2xl bg-white/50 px-4 py-6 ring-1 ring-purple-100 dark:bg-white/5 dark:ring-white/10">
             <p className="text-center text-base font-semibold leading-relaxed text-purple-700 dark:text-purple-200">
-              እባክዎ ይህ ጨዋታ እስኪጨርስ ይጠብቁ
+              {t("bingo.spectatorWaitAm")}
               <br />
               <span className="mt-2 block text-sm font-medium text-purple-400 dark:text-purple-300/70">
-                You did not select a board — please wait until this game finishes
+                {t("bingo.spectatorWaitEn")}
               </span>
             </p>
           </div>

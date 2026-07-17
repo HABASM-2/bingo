@@ -16,6 +16,12 @@ class Settings(BaseSettings):
 
     DATABASE_URL: str
 
+    # SQLAlchemy pool sizing (per process). Safe defaults for multi-worker.
+    DB_POOL_SIZE: int = 5
+    DB_MAX_OVERFLOW: int = 10
+    DB_POOL_TIMEOUT: int = 30
+    DB_POOL_RECYCLE: int = 1800
+
     TELEGRAM_BOT_TOKEN: str = ""
     TELEGRAM_BOT_USERNAME: str = ""
     # Keep enabled by default. Only set false for emergency local debugging.
@@ -27,6 +33,10 @@ class Settings(BaseSettings):
     TELEGRAM_WEBAPP_URL: str = ""
 
     REDIS_URL: str = "redis://localhost:6379"
+
+    # Comma-separated Telegram usernames allowed to use privileged endpoints.
+    # Authorization always uses the username stored on the JWT-authenticated user.
+    ADMIN_TELEGRAM_USERNAMES: str = "has365"
 
     BINGO_DRAW_INTERVAL_MIN: float = 3.0
     BINGO_DRAW_INTERVAL_MAX: float = 5.0

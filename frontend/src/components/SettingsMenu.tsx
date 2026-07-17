@@ -1,9 +1,11 @@
 import { useState } from "react";
 import { Settings, X } from "lucide-react";
 import { ThemeToggle } from "./ThemeToggle";
+import { useI18n } from "../i18n";
 
 export function SettingsMenu() {
   const [open, setOpen] = useState(false);
+  const { t } = useI18n();
 
   return (
     <>
@@ -69,7 +71,7 @@ export function SettingsMenu() {
               dark:border-white/10
               "
             >
-              <h2 className="text-lg font-bold">Settings</h2>
+              <h2 className="text-lg font-bold">{t("settings.title")}</h2>
 
               <button
                 onClick={() => setOpen(false)}
@@ -93,7 +95,7 @@ export function SettingsMenu() {
               mb-3
               "
               >
-                Appearance
+                {t("settings.appearance")}
               </p>
 
               <ThemeToggle />

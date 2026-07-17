@@ -5,6 +5,14 @@ from app.models.request_tr import DepositRequest, WithdrawRequest, TransferReque
 from app.models.bingo_game import BingoGame, BingoGameResult
 from app.models.dama_game import DamaGame, DamaGameResult
 from app.models.aviator_game import AviatorRound, AviatorBet
+from app.models.plinko_game import PlinkoPlay
+from app.models.lotto_game import (
+    LottoReservation,
+    LottoReservationRequest,
+    LottoRound,
+    LottoWinner,
+)
+from app.models.admin_audit_log import AdminAuditLog
 
 __all__ = [
     "User",
@@ -21,4 +29,10 @@ __all__ = [
     "DamaGameResult",
     "AviatorRound",
     "AviatorBet",
+    "PlinkoPlay",
+    "LottoRound",
+    "LottoReservation",
+    "LottoReservationRequest",
+    "LottoWinner",
+    "AdminAuditLog",
 ]
