@@ -14,6 +14,7 @@ import { SpectatorView } from "./SpectatorView";
 import { WinnerOverlay } from "./WinnerOverlay";
 import { ProfileHub } from "./ProfileHub";
 import { HomeView } from "./HomeView";
+import { bingoHomeLiveBoardCount } from "./homeLiveMetric";
 import { NetworkAlert } from "./NetworkAlert";
 import { getAdminMe } from "../../services/admin";
 import {
@@ -26,9 +27,9 @@ import {
   stopGameAudio,
 } from "../../utils/gameAudio";
 import {
-  launchGameToTab,
-  readTelegramLaunch,
-} from "../../utils/telegramLaunch";
+  resolveInitialNavTab,
+  writeSavedNavTab,
+} from "../../utils/navTabStorage";
 import type { RoomStatus } from "../../types/bingo";
 
 const AdminDashboard = lazy(() =>
@@ -67,6 +68,10 @@ interface BingoGameProps {
   /** Fresh JWT from this Telegram launch — never read a sticky localStorage
    * value that might belong to a previous Mini App session. */
   accessToken: string;
+  /** Auth referral code for Home Refer & earn. */
+  referralCode?: string | null;
+  /** Prefabricated Telegram invite URL (`t.me/<bot>?start=<code>`). */
+  inviteLink?: string | null;
   onExit?: () => void;
 }
 
@@ -83,6 +88,8 @@ export default function BingoGame({
   firstName,
   authBalance,
   accessToken,
+  referralCode = null,
+  inviteLink = null,
   onExit,
 }: BingoGameProps) {
   const { t } = useI18n();
@@ -90,7 +97,8 @@ export default function BingoGame({
   translateRef.current = t;
   const [roomId, setRoomId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [tab, setTab] = useState<NavTab>("home");
+  const initialNav = useRef(resolveInitialNavTab());
+  const [tab, setTab] = useState<NavTab>(() => initialNav.current.tab);
   const [isAdmin, setIsAdmin] = useState(false);
   const [mountedGames, setMountedGames] = useState<Partial<Record<KeepAliveGame, true>>>({});
   const [soundOn, setSoundOn] = useState(true);
@@ -98,17 +106,16 @@ export default function BingoGame({
   const [audioRetryToken, setAudioRetryToken] = useState(0);
   const [autoOn, setAutoOn] = useState(true);
   const [showWinnerDialog, setShowWinnerDialog] = useState(false);
-  const deepLinkConsumed = useRef(false);
-  const adminDeepLinkRequested = useRef(false);
+  const adminDeepLinkRequested = useRef(initialNav.current.adminDeepLinkPending);
+  const adminRestorePending = useRef(initialNav.current.adminRestorePending);
 
-  // Open a specific game once when launched via bot deep link / start_param.
+  // Persist active tab across refresh (sessionStorage). Deep-link already
+  // won on first paint via resolveInitialNavTab. Skip writes while an admin
+  // deep-link / restore is still pending so we don't clobber a saved "admin".
   useEffect(() => {
-    if (deepLinkConsumed.current) return;
-    deepLinkConsumed.current = true;
-    const { game } = readTelegramLaunch();
-    if (game === "admin") adminDeepLinkRequested.current = true;
-    else if (game) setTab(launchGameToTab(game));
-  }, []);
+    if (adminDeepLinkRequested.current || adminRestorePending.current) return;
+    writeSavedNavTab(tab);
+  }, [tab]);
 
   // Navigation capability comes only from the server-authorized endpoint.
   useEffect(() => {
@@ -118,13 +125,21 @@ export default function BingoGame({
         if (!active) return;
         setIsAdmin(capability.is_admin);
         if (adminDeepLinkRequested.current) {
+          adminDeepLinkRequested.current = false;
+          setTab(capability.is_admin ? "admin" : "home");
+        } else if (adminRestorePending.current) {
+          adminRestorePending.current = false;
           setTab(capability.is_admin ? "admin" : "home");
         }
       })
       .catch(() => {
         if (active) {
           setIsAdmin(false);
-          if (adminDeepLinkRequested.current) setTab("home");
+          if (adminDeepLinkRequested.current || adminRestorePending.current) {
+            adminDeepLinkRequested.current = false;
+            adminRestorePending.current = false;
+            setTab("home");
+          }
         }
       });
     return () => { active = false; };
@@ -266,14 +281,20 @@ export default function BingoGame({
   }, [audioRetryToken, currentBall, onBingoTab, roomState?.status, soundOn]);
 
   // Play the round-start beat only on the real lobby -> game transition.
-  // Also jump onto the Bingo tab so the live round overlays the interface.
+  // Do NOT call setTab("bingo") here: if the user left Bingo for another
+  // tab/game, stay there until they open Bingo again. Deep-link ?game=bingo
+  // is handled once on mount above.
   useEffect(() => {
     const nextStatus = roomState?.status ?? null;
     const previousStatus = previousRoomStatus.current;
 
-    if (previousStatus === "lobby" && nextStatus === "in_progress") {
-      setTab("bingo");
-      if (soundOn) void playGameAudio(NEW_GAME_AUDIO_SRC);
+    if (
+      previousStatus === "lobby" &&
+      nextStatus === "in_progress" &&
+      onBingoTab &&
+      soundOn
+    ) {
+      void playGameAudio(NEW_GAME_AUDIO_SRC);
     }
 
     if (nextStatus === "lobby") {
@@ -281,7 +302,7 @@ export default function BingoGame({
     }
 
     previousRoomStatus.current = nextStatus;
-  }, [roomState?.status, soundOn]);
+  }, [onBingoTab, roomState?.status, soundOn]);
 
   useEffect(() => {
     if (!onBingoTab || !soundOn) stopGameAudio();
@@ -424,13 +445,14 @@ export default function BingoGame({
           <HomeView
             firstName={firstName}
             balance={walletBalance ?? WALLET_LOADING_PLACEHOLDER}
-            bingoPlayers={
-              inGame
-                ? roomState.players_in_round
-                : (roomState.player_count ?? roomState.players_in_round)
-            }
-            bingoLive={inGame}
+            bingoLiveSelectors={bingoHomeLiveBoardCount(
+              roomState.status,
+              roomState.taken_boards,
+            )}
+            bingoLive={roomState.status === "in_progress"}
             bingoSecondsLeft={secondsLeft}
+            referralCode={referralCode}
+            inviteLink={inviteLink}
             onOpenGame={(game) => setTab(game)}
           />
         )}
@@ -593,6 +615,8 @@ export default function BingoGame({
           drawn={drawn}
           youWon={youWon}
           seconds={WINNER_OVERLAY_SECONDS}
+          inviteLink={inviteLink}
+          onDismiss={() => setShowWinnerDialog(false)}
         />
       )}
 

@@ -38,6 +38,8 @@ def system_fee_rate(player_count: int) -> Decimal:
 
     In this game each board counts as one player, so 3 users with 2 boards
     each are 6 players → 10% fee.
+
+    Tiers: ≤4 boards → 0%, 5–10 → 10%, 11+ → 20%.
     """
 
     if player_count <= 4:
@@ -53,6 +55,54 @@ def apply_system_fee(derash: Decimal, player_count: int) -> tuple[Decimal, Decim
     rate = system_fee_rate(player_count)
     fee = (derash * rate).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
     return derash - fee, fee
+
+
+def compute_bingo_round_system_gain(
+    real_boards: int,
+    bot_boards: int,
+    stake: Decimal,
+    bot_won: bool,
+    fee_rate: Decimal | None = None,
+) -> Decimal:
+    """Admin-recognized house P&L for one Bingo round when the house bot plays.
+
+    Fee tiers (verified in ``system_fee_rate``): ≤4 → 0%, 5–10 → 10%, 11+ → 20%.
+    ``fee_rate`` defaults from total boards (real + bot).
+
+    Bot win (no real player among winners)
+        House keeps all real-player stakes as revenue — no % cut.
+        ``system_gain = real_boards × stake`` (e.g. 5 × 10 = 50).
+        Bot stake debits stay internal; the bot is not paid ``BINGO_WIN``.
+        Settlement credits the bot wallet ``BINGO_BOT_SYSTEM_GAIN`` for the
+        real stake total (see ``_settle_winners`` / ``credit_bot_system_gain``).
+
+    Bot loss (a real player wins, or bot boards = 0)
+        Normal house cut on the **full** pool (real + bot stakes):
+        ``S = fee_rate × (real_boards + bot_boards) × stake`` (ROUND_DOWN 0.01).
+        Bot stakes are treated as a house cost of participating, so
+        ``system_gain = S − bot_boards × stake``.
+        With no bot boards this equals ``S`` (unchanged legacy behavior).
+        Bot wallet: stake already spent on select; no further debit/credit.
+
+    Worked example (stake=10, 5 real + 10 bot → 15 boards → 20%):
+        Bot wins  → gain = 50
+        Real wins → S = 0.20 × 150 = 30; gain = 30 − 100 = −70
+    """
+
+    real_n = max(0, int(real_boards))
+    bot_n = max(0, int(bot_boards))
+    stake_q = Decimal(stake)
+    real_stakes = stake_q * real_n
+    bot_stakes = stake_q * bot_n
+
+    if bot_won and bot_n > 0:
+        return real_stakes.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+
+    total_boards = real_n + bot_n
+    rate = system_fee_rate(total_boards) if fee_rate is None else Decimal(fee_rate)
+    pool = real_stakes + bot_stakes
+    house_cut = (pool * rate).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+    return (house_cut - bot_stakes).quantize(Decimal("0.01"), rounding=ROUND_DOWN)
 
 
 class BingoError(Exception):
@@ -319,6 +369,25 @@ async def _broadcast_board_delta(
         **(await _board_economics(room_id, room.board_price)),
     }
     await manager.broadcast(room_id, payload)
+
+
+async def broadcast_board_delta(
+    room_id: str,
+    *,
+    action: str,
+    user_id: str,
+    board_id: int | None = None,
+    board_ids: list[int] | None = None,
+) -> None:
+    """Public alias used by the house bot and other non-WS actors."""
+
+    await _broadcast_board_delta(
+        room_id,
+        action=action,
+        user_id=user_id,
+        board_id=board_id,
+        board_ids=board_ids,
+    )
 
 
 async def broadcast_room_sync(room_id: str) -> None:
@@ -805,11 +874,25 @@ async def _settle_winners(
     net derash equally after the system fee (0% / 10% / 20% by staked-board
     count — e.g. 3 users × 2 boards = 6 → 10%).
     A single ``game_over`` broadcast carries the full winner-board list.
+
+    House-bot accounting (see ``compute_bingo_round_system_gain``):
+    * Bot-only win → no ``BINGO_WIN``; credit bot wallet ``BINGO_BOT_SYSTEM_GAIN``
+      for ``real_stake_total``; admin ``system_gain`` = real stakes; prize-facing
+      ``system_fee`` = full derash (history prize_pool 0).
+    * Real win with bot boards → pay real winners only (never ``BINGO_WIN`` to
+      bot); bot stakes already spent via ``BINGO_STAKE``; admin ``system_gain`` =
+      house cut − bot stakes.
     """
 
     plan: dict[str, Decimal] = {}
     game_id = ""
     system_fee = Decimal("0")
+    system_gain = Decimal("0")
+    bot_won = False
+    bot_user_id: str | None = None
+    real_stake_total = Decimal("0")
+    bot_stake_total = Decimal("0")
+    prize_pool = Decimal("0")
     room_snapshot: RoomState | None = None
 
     async with room_lock(room_id):
@@ -841,24 +924,72 @@ async def _settle_winners(
             if card.user_id not in winner_user_ids:
                 winner_user_ids.append(card.user_id)
 
-        num_winners = len(winner_user_ids)
+        # Lazy import: house_bot imports service at module load.
+        from app.bingo import house_bot
+        from app.bingo.dummy_names import pick_dummy_name
+
+        bot_user_id = house_bot.cached_bot_user_id()
+        stake = Decimal(room.board_price)
+        bot_boards = sum(
+            1 for card in room.cards.values()
+            if bot_user_id and card.user_id == bot_user_id
+        )
+        real_boards = max(0, len(room.cards) - bot_boards)
+        real_stake_total = stake * real_boards
+        bot_stake_total = stake * bot_boards
+        # Bot "won" only when every winning player is the house bot.
+        bot_won = bool(
+            bot_user_id
+            and bot_boards > 0
+            and winner_user_ids
+            and all(uid == bot_user_id for uid in winner_user_ids)
+        )
+
         # Fee tiers count each staked board as one "player".
         board_players = room.round_players or len(room.cards)
         gross_derash = Decimal(room.derash)
-        prize_pool, system_fee = apply_system_fee(gross_derash, board_players)
-        share = _split_derash(prize_pool, num_winners)
-        remainder = prize_pool - share * num_winners
+        system_gain = compute_bingo_round_system_gain(
+            real_boards, bot_boards, stake, bot_won,
+        )
 
-        for idx, uid in enumerate(winner_user_ids):
-            amount = share + (remainder if idx == 0 else Decimal("0"))
-            plan[uid] = amount
+        if bot_won:
+            # No player-facing prize. Real stakes are credited to the bot
+            # wallet after the lock (BINGO_BOT_SYSTEM_GAIN). Prize-facing fee
+            # = full derash so history prize_pool is 0.
+            system_fee = gross_derash
+            prize_pool = Decimal("0")
+            share = Decimal("0")
+            plan = {}
+        else:
+            prize_pool, system_fee = apply_system_fee(gross_derash, board_players)
+            # Pay real winners only — never BINGO_WIN the house bot when a
+            # real player also completed (bot stakes stay spent from select).
+            paid_winner_ids = [
+                uid for uid in winner_user_ids
+                if not bot_user_id or uid != bot_user_id
+            ] or list(winner_user_ids)
+            num_winners = len(paid_winner_ids)
+            share = _split_derash(prize_pool, num_winners)
+            remainder = prize_pool - share * num_winners
+            for idx, uid in enumerate(paid_winner_ids):
+                amount = share + (remainder if idx == 0 else Decimal("0"))
+                plan[uid] = amount
+
+        round_key = room.game_id or room.room_id
 
         winners_meta: list[dict] = []
         for card, pattern in winning:
             player = room.players.get(card.user_id)
+            # Public win splash: bot uses a stable dummy first name so players
+            # see a Telegram-like winner. user_id stays the real bot id; DB /
+            # admin identity (is_bot, first_name) is never rewritten here.
+            if bot_user_id and card.user_id == bot_user_id:
+                name = pick_dummy_name(round_key, bot_user_id)
+            else:
+                name = player.display_name if player else "Winner"
             winners_meta.append({
                 "user_id": card.user_id,
-                "name": player.display_name if player else "Winner",
+                "name": name,
                 "card_id": card.card_id,
                 "pattern": pattern.name,
             })
@@ -892,9 +1023,37 @@ async def _settle_winners(
                     await save_room(room2)
                     room_snapshot = room2
 
+    # Bot won: move real-player stake revenue onto the bot wallet. Stakes were
+    # already debited from reals on select; this is not a second charge to them.
+    if bot_won and bot_user_id and real_stake_total > 0:
+        bot_balance = await asyncio.to_thread(
+            wallet.credit_bot_system_gain,
+            bot_user_id,
+            real_stake_total,
+            game_id,
+        )
+        if bot_balance is not None and room_snapshot is not None:
+            async with room_lock(room_id):
+                room2 = await get_room(room_id)
+                if room2 is not None:
+                    player = room2.players.get(bot_user_id)
+                    if player is not None:
+                        player.balance = bot_balance
+                    await save_room(room2)
+                    room_snapshot = room2
+
     # Stamp the finished round + winner amounts onto the history record.
     # winner_count is the number of winning boards (two boards => 2).
+    # Persist player-facing names (incl. bot dummy) so Profile history matches
+    # the live splash — not User.first_name / "Bright Bot".
     if game_id:
+        public_names: dict[str, str] = {}
+        if room_snapshot is not None:
+            for meta in room_snapshot.winners or []:
+                uid = meta.get("user_id")
+                name = (meta.get("name") or "").strip()
+                if uid and name and uid not in public_names:
+                    public_names[uid] = name
         await asyncio.to_thread(
             wallet.record_round_finish,
             game_id,
@@ -902,6 +1061,11 @@ async def _settle_winners(
             room_snapshot.winning_pattern if room_snapshot else None,
             len(room_snapshot.winners) if room_snapshot else len(plan),
             system_fee,
+            public_names,
+            system_gain,
+            bot_won,
+            real_stake_total,
+            bot_stake_total,
         )
 
     if room_snapshot is None:
@@ -916,7 +1080,9 @@ async def _settle_winners(
         "derash": room_snapshot.derash,
         "derash_share": room_snapshot.derash_share,
         "system_fee": str(system_fee),
-        "prize_pool": str(Decimal(room_snapshot.derash) - system_fee),
+        "system_gain": str(system_gain),
+        "prize_pool": str(prize_pool),
+        "bot_won": bot_won,
         "winners": room_snapshot.winners,
         "winner_count": len(room_snapshot.winners),
     })

@@ -9,6 +9,7 @@ from app.schemas.auth import TelegramLoginRequest, TokenResponse
 from app.core.telegram import TelegramAuth
 from app.core.security import create_access_token
 from app.services.auth_service import AuthService
+from app.bot.links import build_invite_link
 
 
 router = APIRouter(
@@ -16,19 +17,31 @@ router = APIRouter(
     tags=["Authentication"]
 )
 
-@router.get("/me")
-def me(
-    user: User = Depends(get_current_user),
-):
+
+def _user_payload(user: User) -> dict:
+    referral_code = user.referral_code or ""
     return {
         "id": str(user.id),
         "telegram_id": user.telegram_id,
         "username": user.username,
-        "first_name": user.first_name,        
+        "first_name": user.first_name,
         "last_name": user.last_name,
         "photo_url": user.photo_url,
+        # Real Postgres balance for this user — the frontend uses this to
+        # seed the wallet display immediately after login instead of
+        # waiting on a second round-trip (and must never fall back to a
+        # shared/hardcoded number in its place).
         "balance": str(user.balance),
+        "referral_code": referral_code,
+        "invite_link": build_invite_link(referral_code),
     }
+
+
+@router.get("/me")
+def me(
+    user: User = Depends(get_current_user),
+):
+    return _user_payload(user)
 
 @router.post("/telegram", response_model=TokenResponse)
 def telegram_login(
@@ -61,15 +74,5 @@ def telegram_login(
     return {
         "access_token": token,
         "token_type": "bearer",
-        "user": {
-            "id": str(user.id),
-            "telegram_id": user.telegram_id,
-            "username": user.username,
-            "first_name": user.first_name,
-            # Real Postgres balance for this user - the frontend uses this to
-            # seed the wallet display immediately after login instead of
-            # waiting on a second round-trip (and must never fall back to a
-            # shared/hardcoded number in its place).
-            "balance": str(user.balance),
-        }
+        "user": _user_payload(user),
     }

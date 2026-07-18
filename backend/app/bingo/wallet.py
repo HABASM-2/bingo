@@ -21,6 +21,8 @@ from app.services.wallet_service import credit_wallet
 
 STAKE_TX_TYPE = "BINGO_STAKE"
 WIN_TX_TYPE = "BINGO_WIN"
+BOT_TOPUP_TX_TYPE = "BINGO_BOT_TOPUP"
+BOT_SYSTEM_GAIN_TX_TYPE = "BINGO_BOT_SYSTEM_GAIN"
 
 
 def _load_user(db, user_id: str) -> User | None:
@@ -169,6 +171,85 @@ def get_balance(user_id: str) -> str:
         db.close()
 
 
+def ensure_bot_balance(user_id: str) -> str:
+    """Credit house funds when the bot wallet is below the configured floor.
+
+    Uses ``BINGO_BOT_TOPUP`` ledger rows with ``reference_type=BINGO_BOT`` so
+    admin user-detail can audit top-ups separately from player deposits.
+    """
+
+    from app.core.config import settings
+
+    min_balance = Decimal(settings.BINGO_BOT_MIN_BALANCE)
+    topup = Decimal(settings.BINGO_BOT_TOPUP_AMOUNT)
+
+    db = SessionLocal()
+    try:
+        user = _load_user(db, user_id)
+        if user is None:
+            return "0"
+
+        if user.balance >= min_balance:
+            return str(user.balance)
+
+        credit_wallet(
+            db,
+            user,
+            amount=topup,
+            transaction_type=BOT_TOPUP_TX_TYPE,
+            description=f"Bingo house bot top-up (+{topup} ETB)",
+            reference_type="BINGO_BOT",
+        )
+        db.commit()
+        return str(user.balance)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def credit_bot_system_gain(
+    bot_user_id: str,
+    amount: Decimal,
+    game_id: str,
+) -> str | None:
+    """Credit the house bot wallet with real-player stakes when the bot wins.
+
+    Real players already lost their stakes via ``BINGO_STAKE`` on board select.
+    This ledger row moves that revenue onto the bot balance (house liability)
+    without paying a player-facing ``BINGO_WIN``. Returns the new balance
+    string, or ``None`` if the amount is non-positive / user missing.
+    """
+
+    if amount <= 0:
+        return None
+
+    db = SessionLocal()
+    try:
+        user = _load_user(db, bot_user_id)
+        if user is None:
+            return None
+
+        credit_wallet(
+            db,
+            user,
+            amount=amount,
+            transaction_type=BOT_SYSTEM_GAIN_TX_TYPE,
+            description=(
+                f"Bingo bot system gain ({game_id}) - real stakes +{amount} ETB"
+            ),
+            reference_type="BINGO_BOT",
+        )
+        db.commit()
+        return str(user.balance)
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # History persistence (BingoGame / BingoGameResult)
 # ---------------------------------------------------------------------------
@@ -249,12 +330,24 @@ def record_round_finish(
     winning_pattern: str | None,
     winner_count: int,
     system_fee: Decimal | None = None,
+    public_winner_names: dict[str, str] | None = None,
+    system_gain: Decimal | None = None,
+    bot_won: bool = False,
+    real_stake_total: Decimal | None = None,
+    bot_stake_total: Decimal | None = None,
 ) -> None:
     """Mark a round finished and stamp winners/amounts onto their result rows.
 
-    ``winners`` maps user_id -> total prize credited to that user. Best-effort.
+    ``winners`` maps user_id -> total prize credited to that user.
+    ``public_winner_names`` maps user_id -> player-facing display name (e.g. a
+    durable dummy name for bot wins). Best-effort.
+
+    ``system_fee`` is the prize-facing house cut (withheld from derash).
+    ``system_gain`` is the admin-recognized P&L (bot-aware). When omitted,
+    ``system_gain`` defaults to ``system_fee``.
     """
 
+    names = public_winner_names or {}
     db = SessionLocal()
 
     try:
@@ -273,6 +366,15 @@ def record_round_finish(
         game.finished_at = datetime.now(timezone.utc)
         if system_fee is not None:
             game.system_fee = system_fee
+        if system_gain is not None:
+            game.system_gain = system_gain
+        elif system_fee is not None:
+            game.system_gain = system_fee
+        game.bot_won = bool(bot_won)
+        if real_stake_total is not None:
+            game.real_stake_total = real_stake_total
+        if bot_stake_total is not None:
+            game.bot_stake_total = bot_stake_total
 
         for user_id, amount in winners.items():
             try:
@@ -292,6 +394,32 @@ def record_round_finish(
             if result is not None:
                 result.is_winner = True
                 result.amount_won = amount
+                public_name = (names.get(user_id) or "").strip()
+                if public_name:
+                    result.public_winner_name = public_name[:80]
+
+        # Bot-only wins still stamp winner rows (amount 0) + public dummy name
+        # so history / admin can see who won without a BINGO_WIN credit.
+        if bot_won and not winners and names:
+            for user_id, public_name in names.items():
+                try:
+                    uid = UUID(user_id)
+                except (ValueError, TypeError):
+                    continue
+                result = (
+                    db.query(BingoGameResult)
+                    .filter(
+                        BingoGameResult.game_id == game.id,
+                        BingoGameResult.user_id == uid,
+                    )
+                    .first()
+                )
+                if result is not None:
+                    result.is_winner = True
+                    result.amount_won = Decimal("0")
+                    label = (public_name or "").strip()
+                    if label:
+                        result.public_winner_name = label[:80]
 
         db.commit()
     except Exception:
@@ -377,7 +505,11 @@ def get_user_history(
         winners_by_game: dict = {gid: [] for gid in game_ids}
         if game_ids:
             winner_rows = (
-                db.query(BingoGameResult.game_id, User.first_name)
+                db.query(
+                    BingoGameResult.game_id,
+                    BingoGameResult.public_winner_name,
+                    User.first_name,
+                )
                 .join(User, User.id == BingoGameResult.user_id)
                 .filter(
                     BingoGameResult.game_id.in_(game_ids),
@@ -385,8 +517,14 @@ def get_user_history(
                 )
                 .all()
             )
-            for game_id, first_name in winner_rows:
-                name = (first_name or "Player").strip() or "Player"
+            for game_id, public_name, first_name in winner_rows:
+                # Prefer durable public label (bot dummy name); never leak
+                # Bright Bot to player-facing history when a public name exists.
+                name = (
+                    (public_name or "").strip()
+                    or (first_name or "Player").strip()
+                    or "Player"
+                )
                 names = winners_by_game.setdefault(game_id, [])
                 if name not in names:
                     names.append(name)

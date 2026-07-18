@@ -176,7 +176,11 @@ export function DamaGame({
   const busyRef = useRef(false);
   const lastAppliedMoveKey = useRef<string | null>(null);
 
-  const onlineEnabled = phase === "online_lobby" || (phase === "play" && mode === "online");
+  // Drop lobby presence when leaving the tab; keep the socket mid-match so
+  // a brief Home visit cannot trigger an opponent timeout claim.
+  const onlineEnabled =
+    (phase === "online_lobby" && isActive) ||
+    (phase === "play" && mode === "online");
   const online = useDamaOnline({
     token: accessToken || null,
     enabled: onlineEnabled && Boolean(accessToken),

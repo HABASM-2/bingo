@@ -406,10 +406,10 @@ export function LottoSpinGame({
     else if (message.type === "wallet") onBalanceChange(message.balance);
   }, [applyRoom, onBalanceChange]);
 
-  // Stay connected while authenticated — draw follow-along must not depend on the Lotto tab.
+  // Connect only while the Lotto tab is active — disconnect on leave to save load.
   const wsUrl = useMemo(
-    () => (accessToken ? lottoWebSocketUrl(accessToken) : null),
-    [accessToken],
+    () => (isActive && accessToken ? lottoWebSocketUrl(accessToken) : null),
+    [isActive, accessToken],
   );
   const { status: socketStatus } = useWebSocket<ServerMessage, { type: "ping" }>({
     url: wsUrl,
@@ -420,32 +420,40 @@ export function LottoSpinGame({
     reducedMotionRef.current = prefersReducedMotion();
   }, []);
 
-  // Initial / token refresh snapshot — independent of tab visibility.
+  // Clear stale UI when leaving so return shows a connecting loader.
   useEffect(() => {
-    if (!accessToken) return;
-    getLottoSnapshot(accessToken)
-      .then((snapshot) => snapshot.rooms.forEach(applyRoom))
-      .catch(() => setError(t("lotto.roomsError")));
-  }, [accessToken, applyRoom, t]);
+    if (isActive) return;
+    clearSpinTimers();
+    spinChainIdRef.current += 1;
+    animatingRankRef.current = null;
+    previousRoundRef.current = {};
+    animatedRanksRef.current = {};
+    submittingNumbersRef.current = null;
+    setRooms({});
+    setSelected([]);
+    setDisplayWinner(null);
+    setDrawNotice(null);
+    setSpinPhase("idle");
+    setError(null);
+    setSubmitting(false);
+  }, [isActive, clearSpinTimers]);
 
-  // Pause local ceremony only when leaving the Lotto tab; keep room state + WS.
+  // Snapshot + WS catch-up only while the tab is active.
   useEffect(() => {
-    if (!isActive) {
-      clearSpinTimers();
-      spinChainIdRef.current += 1;
-      animatingRankRef.current = null;
-      setSpinPhase("idle");
-      setDrawNotice(null);
-      const current = rooms[activeStakeRef.current];
-      if (current) markRevealsApplied(current);
-      return;
-    }
-    // Returning: reconstruct wheel/notifier from authoritative room store.
-    const current = rooms[activeStakeRef.current];
-    if (current) syncSpinFromRoom(current);
-    // rooms intentionally omitted — only re-sync on visibility regain
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isActive, clearSpinTimers, markRevealsApplied, syncSpinFromRoom]);
+    if (!isActive || !accessToken) return;
+    let cancelled = false;
+    getLottoSnapshot(accessToken)
+      .then((snapshot) => {
+        if (cancelled) return;
+        snapshot.rooms.forEach(applyRoom);
+      })
+      .catch(() => {
+        if (!cancelled) setError(t("lotto.roomsError"));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isActive, accessToken, applyRoom, t]);
 
   useEffect(() => () => {
     clearSpinTimers();
@@ -453,9 +461,10 @@ export function LottoSpinGame({
   }, [clearSpinTimers]);
 
   useEffect(() => {
+    if (!isActive) return;
     const timer = window.setInterval(() => setNow(Date.now()), 200);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [isActive]);
 
   const loadHistory = useCallback((page: number) => {
     setLoadingHistory(true);
@@ -538,8 +547,11 @@ export function LottoSpinGame({
 
   if (!room) {
     return (
-      <div className="flex min-h-0 flex-1 items-center justify-center bg-[#eef3f8] dark:bg-[#070d1a]">
-        <Loader2 className="animate-spin text-sky-500" />
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 bg-[#eef3f8] dark:bg-[#070d1a]">
+        <Loader2 className="h-8 w-8 animate-spin text-sky-500" aria-hidden />
+        <p className="text-sm font-bold text-slate-600 dark:text-white/70">
+          {socketStatus === "open" ? t("common.loadingEllipsis") : t("common.connecting")}
+        </p>
       </div>
     );
   }

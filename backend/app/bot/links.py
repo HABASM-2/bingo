@@ -99,3 +99,12 @@ def build_startapp_payload(game: str | None = None, *, lang: str | None = None) 
     if lang in {"en", "am"}:
         return f"{normalized_game}_{lang}"
     return normalized_game
+
+
+def build_invite_link(referral_code: str | None) -> str:
+    """Bot deep-link used by /invite and Mini App share: ``t.me/<bot>?start=<ref>``."""
+    code = (referral_code or "").strip()
+    username = (settings.TELEGRAM_BOT_USERNAME or "").strip().lstrip("@")
+    if not code or not username:
+        return ""
+    return f"https://t.me/{username}?start={code}"

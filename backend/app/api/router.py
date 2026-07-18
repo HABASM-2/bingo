@@ -2,6 +2,7 @@ from fastapi import APIRouter
 from app.api.routes import auth
 
 from app.api.routes import sms
+from app.api.routes import me
 
 from app.bingo.router import router as bingo_router
 from app.dama.router import router as dama_router
@@ -20,6 +21,10 @@ api_router.include_router(
 api_router.include_router(
     sms.router,
     tags=["sms"],    
+)
+
+api_router.include_router(
+    me.router,
 )
 
 api_router.include_router(

@@ -2,8 +2,22 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
+
+RetentionOption = Literal[
+    "all",
+    "games_only",
+    "7d",
+    "14d",
+    "21d",
+    "30d",
+    "60d",
+    "90d",
+    "120d",
+    "150d",
+]
 
 
 class BalanceAdjustmentIn(BaseModel):
@@ -32,3 +46,20 @@ class DecisionIn(BaseModel):
     @classmethod
     def clean_reason(cls, value: str | None) -> str | None:
         return value.strip() if value else None
+
+
+class BingoBotToggleIn(BaseModel):
+    enabled: bool
+    request_id: uuid.UUID | None = None
+
+
+class DataRetentionPurgeIn(BaseModel):
+    option: RetentionOption
+    confirmation: str = Field(min_length=3, max_length=20)
+    reason: str = Field(min_length=3, max_length=500)
+    request_id: uuid.UUID
+
+    @field_validator("confirmation", "reason")
+    @classmethod
+    def clean_text(cls, value: str) -> str:
+        return value.strip()

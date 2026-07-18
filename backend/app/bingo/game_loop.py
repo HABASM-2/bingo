@@ -23,6 +23,7 @@ import time
 import uuid
 
 from app.bingo import redis_store, service
+from app.bingo import house_bot
 from app.bingo.manager import manager
 from app.bingo.redis_store import room_lock
 from app.core.config import settings
@@ -122,6 +123,13 @@ async def _clear_lobby_timer(room_id: str) -> None:
             await redis_store.save_room(room)
 
 
+async def _real_connected_count(room: redis_store.RoomState) -> int:
+    """Connected humans only — house bot must not keep an empty lobby alive."""
+
+    bot_id = house_bot.cached_bot_user_id()
+    return house_bot.count_real_connected(room, bot_id)
+
+
 async def _run_room_loop(room_id: str) -> None:
     token = uuid.uuid4().hex
     last_renew = 0.0
@@ -141,7 +149,24 @@ async def _run_room_loop(room_id: str) -> None:
                 if room is None:
                     return
 
-                if room.connected_player_count() == 0:
+                real_connected = await _real_connected_count(room)
+
+                if real_connected == 0:
+                    # Let the bot release/leave before we treat the lobby as empty.
+                    # Always tick so a Redis-disabled bot can still drain boards.
+                    if room.status == "lobby":
+                        try:
+                            await house_bot.tick_room(room_id)
+                        except Exception:
+                            logger.exception(
+                                "bingo house bot tick failed (empty) room=%s", room_id
+                            )
+                        room = await redis_store.get_room(room_id)
+                        if room is None:
+                            return
+                        real_connected = await _real_connected_count(room)
+
+                if real_connected == 0:
                     if room.status == "lobby":
                         now = time.monotonic()
                         lobby_empty_since = lobby_empty_since or now
@@ -262,6 +287,14 @@ async def _tick_lobby(room_id: str, room: redis_store.RoomState) -> None:
                 })
 
             await service.broadcast_room_sync(room_id)
+        return
+
+    # House bot claims/releases during the open countdown (leader-only path).
+    # Tick always runs; house_bot re-reads the Redis/env enable flag each cycle.
+    try:
+        await house_bot.tick_room(room_id)
+    except Exception:
+        logger.exception("bingo house bot tick failed room=%s", room_id)
 
 
 async def _draw_number(room_id: str) -> str:

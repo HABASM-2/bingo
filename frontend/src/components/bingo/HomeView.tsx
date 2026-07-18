@@ -1,27 +1,40 @@
+import { useEffect, useState, type MouseEvent } from "react";
 import type { LucideIcon } from "lucide-react";
 import {
   ArrowRight,
+  Check,
   CircleDot,
   Coins,
   Crown,
   Gamepad2,
+  Gift,
   Lock,
   Plane,
   Play,
   RotateCw,
+  Share2,
   Sparkles,
   Users,
 } from "lucide-react";
 import { useI18n } from "../../i18n";
+import { copyText, maskReferralCode, shareInviteLink } from "../../utils/inviteShare";
 
 export type HomeGameId = "bingo" | "dama" | "aviator" | "plinko" | "lotto";
 
 interface HomeViewProps {
   firstName: string;
   balance: string;
-  bingoPlayers: number;
+  /**
+   * Boards currently selected/taken in the live Bingo room (occupancy).
+   * `null` when not in lobby/in-progress — Home hides the live count on cards.
+   */
+  bingoLiveSelectors: number | null;
   bingoLive: boolean;
   bingoSecondsLeft: number;
+  /** User referral code from auth; used for Refer & earn. */
+  referralCode?: string | null;
+  /** Prefabricated `t.me/<bot>?start=<code>` invite URL when available. */
+  inviteLink?: string | null;
   onOpenGame: (game: HomeGameId) => void;
 }
 
@@ -38,12 +51,15 @@ type CatalogGame = {
 export function HomeView({
   firstName,
   balance,
-  bingoPlayers,
+  bingoLiveSelectors,
   bingoLive,
   bingoSecondsLeft,
+  referralCode = null,
+  inviteLink = null,
   onOpenGame,
 }: HomeViewProps) {
   const { t, formatNumber } = useI18n();
+  const [shareFlash, setShareFlash] = useState(false);
   const numericBalance = Number(balance);
   const balanceLabel =
     balance !== "—" && Number.isFinite(numericBalance)
@@ -53,6 +69,33 @@ export function HomeView({
         })
       : balance;
   const walletReady = balance !== "—" && Number.isFinite(numericBalance);
+  const selectorsKnown = bingoLiveSelectors != null;
+  const selectors = bingoLiveSelectors ?? 0;
+  const showSelectorsLive = selectorsKnown && selectors > 0;
+  const code = (referralCode ?? "").trim();
+  const link = (inviteLink ?? "").trim();
+  const canRefer = Boolean(code);
+
+  useEffect(() => {
+    if (!shareFlash) return;
+    const id = window.setTimeout(() => setShareFlash(false), 1600);
+    return () => window.clearTimeout(id);
+  }, [shareFlash]);
+
+  const handleReferShare = async (event: MouseEvent) => {
+    event.preventDefault();
+    if (!canRefer) return;
+    if (link) {
+      const result = await shareInviteLink({
+        url: link,
+        title: t("home.referInvite"),
+        text: t("home.referInvite"),
+      });
+      if (result === "copied" || result === "shared") setShareFlash(true);
+      return;
+    }
+    if (await copyText(code)) setShareFlash(true);
+  };
 
   const games: CatalogGame[] = [
     {
@@ -62,10 +105,9 @@ export function HomeView({
         ? t("home.bingo.taglineLive")
         : t("home.bingo.taglineWait", { seconds: Math.max(0, bingoSecondsLeft) }),
       icon: Gamepad2,
-      playersLabel:
-        bingoPlayers > 0
-          ? t("home.bingo.playersLive", { count: bingoPlayers })
-          : t("home.bingo.playersWait"),
+      playersLabel: showSelectorsLive
+        ? t("home.bingo.playersLive", { count: selectors })
+        : t("home.bingo.playersWait"),
       cover: "from-[#5B21B6] via-[#7C3AED] to-[#DB2777]",
       glow: "bg-fuchsia-300/35",
     },
@@ -171,14 +213,54 @@ export function HomeView({
             {t("home.statusGames")}
           </p>
         </div>
-        <div className="min-w-0 px-2 text-center">
-          <p className={`text-sm font-black ${bingoLive ? "text-emerald-600 dark:text-emerald-300" : "text-violet-950 dark:text-white"}`}>
-            {bingoLive ? t("common.live") : `${Math.max(0, bingoSecondsLeft)}s`}
-          </p>
-          <p className="break-words text-[9px] font-bold uppercase leading-[1.35] tracking-wide text-violet-500 dark:text-violet-300/65">
-            {t("home.statusBingo")}
-          </p>
+
+        <div className="min-w-0 px-1.5 text-center">
+          <button
+            type="button"
+            disabled={!canRefer}
+            onClick={handleReferShare}
+            aria-label={t("home.referAria")}
+            title={canRefer ? (link || code) : undefined}
+            className={`group relative flex w-full flex-col items-center justify-center rounded-xl px-1 py-0.5 outline-none transition-[transform,background-color] duration-200 focus-visible:ring-2 focus-visible:ring-emerald-500 focus-visible:ring-offset-1 disabled:cursor-not-allowed disabled:opacity-55 motion-reduce:transition-none ${
+              shareFlash ? "animate-[referFlash_0.7s_ease-out]" : ""
+            } ${canRefer ? "active:scale-[0.97] hover:bg-emerald-50/80 dark:hover:bg-emerald-400/10" : ""}`}
+          >
+            <span className="inline-flex items-center gap-1 text-sm font-black text-emerald-700 dark:text-emerald-300">
+              {shareFlash ? (
+                <Check size={14} strokeWidth={2.6} aria-hidden />
+              ) : (
+                <Gift size={14} strokeWidth={2.4} aria-hidden />
+              )}
+              <span className="tabular-nums tracking-tight">
+                {shareFlash
+                  ? t("home.referCopied")
+                  : canRefer
+                    ? t("home.referHint")
+                    : "…"}
+              </span>
+            </span>
+            <span className="mt-0.5 flex max-w-full items-center justify-center gap-0.5 break-words text-[9px] font-bold uppercase leading-[1.35] tracking-wide text-violet-500 dark:text-violet-300/65">
+              {canRefer ? (
+                <>
+                  <span className="truncate">{t("home.referEarn")}</span>
+                  <Share2
+                    size={10}
+                    className="shrink-0 opacity-70 transition-transform group-hover:translate-x-px motion-reduce:transition-none"
+                    aria-hidden
+                  />
+                </>
+              ) : (
+                t("home.referUnavailable")
+              )}
+            </span>
+            {canRefer && (
+              <span className="mt-0.5 max-w-full truncate font-mono text-[8px] font-bold tracking-wider text-emerald-600/80 dark:text-emerald-300/70">
+                {t("home.referCode", { code: maskReferralCode(code) })}
+              </span>
+            )}
+          </button>
         </div>
+
         <div className="min-w-0 px-2 text-center">
           <p className="text-sm font-black text-violet-950 dark:text-white">
             {walletReady ? "✓" : "…"}

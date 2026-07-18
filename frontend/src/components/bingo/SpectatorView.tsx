@@ -51,12 +51,12 @@ export function SpectatorView({
         <Stat label={t("bingo.call")} value={String(drawn.length)} />
       </div>
 
-      <div className="flex flex-1 gap-2 overflow-y-auto px-2 pb-2">
-        <div className="w-[42%] shrink-0">
+      <div className="flex items-start gap-2 overflow-y-auto px-2 pb-2">
+        <div className="w-[42%] shrink-0 self-start">
           <CalledColumns drawn={drawn} currentBall={currentBall} />
         </div>
 
-        <div className="flex flex-1 flex-col gap-4">
+        <div className="flex min-w-0 flex-1 flex-col gap-3">
           <CurrentCall
             currentBall={currentBall}
             drawn={drawn}
@@ -77,11 +77,11 @@ export function SpectatorView({
             </p>
           )}
 
-          <div className="flex flex-1 items-center justify-center rounded-2xl bg-white/50 px-4 py-6 ring-1 ring-purple-100 dark:bg-white/5 dark:ring-white/10">
-            <p className="text-center text-base font-semibold leading-relaxed text-purple-700 dark:text-purple-200">
+          <div className="flex h-fit flex-none items-center justify-center rounded-2xl bg-white/50 px-4 py-3 ring-1 ring-purple-100 dark:bg-white/5 dark:ring-white/10">
+            <p className="text-center text-sm font-semibold leading-snug text-purple-700 dark:text-purple-200">
               {t("bingo.spectatorWaitAm")}
               <br />
-              <span className="mt-2 block text-sm font-medium text-purple-400 dark:text-purple-300/70">
+              <span className="mt-1 block text-xs font-medium text-purple-400 dark:text-purple-300/70">
                 {t("bingo.spectatorWaitEn")}
               </span>
             </p>

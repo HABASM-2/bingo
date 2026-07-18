@@ -7,9 +7,15 @@ from datetime import datetime
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.admin import service
+from app.admin import data_retention, service
 from app.admin.helpers import date_range, is_admin, require_admin
-from app.admin.schemas import BalanceAdjustmentIn, DecisionIn
+from app.admin.schemas import (
+    BalanceAdjustmentIn,
+    BingoBotToggleIn,
+    DataRetentionPurgeIn,
+    DecisionIn,
+    RetentionOption,
+)
 from app.api.current_user import get_current_user
 from app.api.dependencies import get_db
 from app.bot.notify import notify_withdrawal_decision
@@ -55,7 +61,7 @@ def admin_me(current_user: User = Depends(get_current_user)):
         "username": current_user.username,
         "permissions": (
             ["dashboard:read", "users:read", "wallet:adjust", "payments:review",
-             "games:read", "audit:read"]
+             "games:read", "audit:read", "data:purge"]
             if allowed else []
         ),
     }
@@ -100,7 +106,7 @@ def get_game_players(
 @router.get("/users")
 def get_users(
     search: str | None = Query(None, max_length=100),
-    status: str | None = Query(None, pattern="^(active|inactive)$"),
+    status: str | None = Query(None, pattern="^(active|inactive|bot)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     sort: str = Query("joined_desc"),
@@ -218,3 +224,46 @@ def get_audit(
     _: User = Depends(require_admin),
 ):
     return service.audit_feed(db, limit, offset)
+
+
+@router.get("/bingo-bot")
+async def get_bingo_bot(
+    _: User = Depends(require_admin),
+):
+    return await service.bingo_bot_status()
+
+
+@router.post("/bingo-bot")
+async def set_bingo_bot(
+    payload: BingoBotToggleIn,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    return await service.set_bingo_bot_enabled(
+        db, admin, payload.enabled, payload.request_id
+    )
+
+
+@router.get("/data-retention/preview")
+def preview_data_retention(
+    option: RetentionOption = Query(...),
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    return data_retention.preview_purge(db, option)
+
+
+@router.post("/data-retention/purge")
+async def purge_data_retention(
+    payload: DataRetentionPurgeIn,
+    db: Session = Depends(get_db),
+    admin: User = Depends(require_admin),
+):
+    return await data_retention.run_purge(
+        db,
+        admin,
+        option=payload.option,
+        confirmation=payload.confirmation,
+        reason=payload.reason,
+        request_id=payload.request_id,
+    )

@@ -69,9 +69,9 @@ export function ActiveGameView({
         <Chip label={t("bingo.call")} value={String(drawn.length)} />
       </div>
 
-      <div className="flex min-h-0 flex-1 gap-1.5 overflow-hidden px-1.5 pb-1.5">
-        {/* Left: all call information and controls, stacked vertically. */}
-        <div className="flex min-w-0 flex-1 basis-0 flex-col gap-1.5 overflow-y-auto rounded-2xl bg-white/35 p-1 dark:bg-white/[0.03]">
+      <div className="flex min-h-0 flex-1 items-start gap-1.5 overflow-hidden px-1.5 pb-1.5">
+        {/* Left: call info + 1–75 board — content-sized, does not stretch. */}
+        <div className="flex h-fit min-w-0 flex-1 basis-0 flex-col gap-1.5 self-start overflow-y-auto rounded-2xl bg-white/35 p-1 dark:bg-white/[0.03]">
           <CurrentCall
             currentBall={currentBall}
             drawn={drawn}
@@ -97,8 +97,8 @@ export function ActiveGameView({
           <CalledColumns drawn={drawn} currentBall={currentBall} />
         </div>
 
-        {/* Right: cartelas only, with the full remaining width. */}
-        <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col gap-1 overflow-y-auto rounded-2xl bg-gradient-to-b from-purple-100/60 to-transparent p-1 dark:from-white/[0.06]">
+        {/* Right: cartelas only — fills remaining height for scrolling. */}
+        <div className="flex min-h-0 min-w-0 flex-1 basis-0 flex-col gap-1 self-stretch overflow-y-auto rounded-2xl bg-gradient-to-b from-purple-100/60 to-transparent p-1 dark:from-white/[0.06]">
           <CallControls
             soundOn={soundOn}
             audioBlocked={audioBlocked}

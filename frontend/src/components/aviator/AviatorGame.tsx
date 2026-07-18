@@ -249,6 +249,22 @@ export function AviatorGame({
   const isFlyingView = phase === "flying" || phase === "crashed";
 
   const playerCount = aviator.round?.player_count ?? 0;
+  // After tab leave we clear round; show loader until the first reconnect snapshot.
+  const awaitingRound = isActive && Boolean(accessToken) && aviator.round == null;
+
+  if (awaitingRound) {
+    return (
+      <div className="flex h-full min-h-0 flex-col items-center justify-center gap-3 bg-slate-100 text-slate-950 dark:bg-[#0b0e12] dark:text-white">
+        <LoaderCircle
+          className="h-8 w-8 animate-spin text-[#E50539]"
+          aria-hidden
+        />
+        <p className="text-sm font-bold text-slate-600 dark:text-white/70">
+          {t("common.connecting")}
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-slate-100 text-slate-950 transition-colors duration-300 dark:bg-[#0b0e12] dark:text-white">

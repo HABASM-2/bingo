@@ -69,6 +69,7 @@ export function LobbyView({
       : maxBoards;
   const locked = myBoards.length >= maxBoards || myBoards.length >= affordableMax;
   const previewSize = myBoards.length >= 2 ? "xs" : "sm";
+  const takenCount = takenBoards.length;
 
   return (
     <div className="flex flex-col gap-3 px-3 py-3 animate-[fadeIn_0.35s_ease-out]">
@@ -91,26 +92,40 @@ export function LobbyView({
         />
       </div>
 
-      <div className="flex items-center justify-between rounded-xl bg-white/60 px-3 py-2 ring-1 ring-purple-100 dark:bg-white/5 dark:ring-white/10">
+      <div className="flex flex-wrap items-center gap-2 rounded-xl bg-white/60 px-3 py-2 ring-1 ring-purple-100 dark:bg-white/5 dark:ring-white/10">
         <span className="text-sm font-bold text-green-600 dark:text-green-400">
           {t("bingo.boardsProgress", {
             current: myBoards.length,
             max: Math.min(maxBoards, affordableMax),
           })}
         </span>
-        {myBoards.length > 0 ? (
-          <button
-            type="button"
-            onClick={onDeselectAll}
-            className="text-xs font-semibold text-purple-700 underline-offset-2 hover:underline dark:text-purple-300"
-          >
-            {t("bingo.deselectAll")}
-          </button>
-        ) : affordableMax <= 0 ? (
-          <span className="text-[11px] font-medium text-red-500">{t("bingo.needBalance")}</span>
-        ) : (
-          <span className="text-[11px] font-medium text-purple-400">{t("bingo.tapToJoin")}</span>
-        )}
+        <span
+          className="inline-flex items-center gap-1.5 rounded-full bg-gradient-to-r from-violet-100 to-fuchsia-50 px-2.5 py-1 shadow-sm ring-1 ring-violet-200/70 dark:from-violet-500/20 dark:to-fuchsia-500/10 dark:ring-violet-400/30"
+          title={t("bingo.boardsOccupancyAria", { taken: takenCount, total: poolMax })}
+          aria-label={t("bingo.boardsOccupancyAria", { taken: takenCount, total: poolMax })}
+        >
+          <span className="text-[9px] font-bold uppercase tracking-wider text-violet-600 dark:text-violet-300/85">
+            {t("bingo.boardsLabel")}
+          </span>
+          <span className="text-sm font-black tabular-nums leading-none text-violet-950 dark:text-white">
+            {t("bingo.boardsOccupancy", { taken: takenCount, total: poolMax })}
+          </span>
+        </span>
+        <div className="ml-auto">
+          {myBoards.length > 0 ? (
+            <button
+              type="button"
+              onClick={onDeselectAll}
+              className="text-xs font-semibold text-purple-700 underline-offset-2 hover:underline dark:text-purple-300"
+            >
+              {t("bingo.deselectAll")}
+            </button>
+          ) : affordableMax <= 0 ? (
+            <span className="text-[11px] font-medium text-red-500">{t("bingo.needBalance")}</span>
+          ) : (
+            <span className="text-[11px] font-medium text-purple-400">{t("bingo.tapToJoin")}</span>
+          )}
+        </div>
       </div>
 
       <BoardGrid

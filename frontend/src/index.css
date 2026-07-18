@@ -43,3 +43,143 @@ html[data-theme="dark"] body {
     transform: translateY(0);
   }
 }
+
+@keyframes winnerPop {
+  0% {
+    opacity: 0;
+    transform: scale(0.88) translateY(12px);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
+}
+
+@keyframes winnerBurst {
+  0% {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  40% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.35);
+  }
+}
+
+@keyframes winnerPulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.04);
+  }
+}
+
+@keyframes referFlash {
+  0% {
+    background-color: rgb(16 185 129 / 0.35);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+@keyframes prizeBounce {
+  0% {
+    opacity: 0;
+    transform: scale(0.72);
+  }
+  55% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes calledBounce {
+  0% {
+    transform: scale(1);
+  }
+  35% {
+    transform: scale(1.28);
+  }
+  60% {
+    transform: scale(0.92);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes calledPulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  @keyframes winnerPop {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes winnerBurst {
+    from {
+      opacity: 0.4;
+    }
+    to {
+      opacity: 0;
+    }
+  }
+
+  @keyframes winnerPulse {
+    from {
+      transform: none;
+    }
+    to {
+      transform: none;
+    }
+  }
+
+  @keyframes prizeBounce {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes calledBounce {
+    from {
+      transform: none;
+    }
+    to {
+      transform: none;
+    }
+  }
+
+  @keyframes calledPulse {
+    from {
+      transform: none;
+    }
+    to {
+      transform: none;
+    }
+  }
+}

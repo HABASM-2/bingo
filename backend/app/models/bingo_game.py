@@ -79,7 +79,36 @@ class BingoGame(Base):
     )
 
     # House cut withheld from derash at settlement (0 / 10% / 20% by players).
+    # When the house bot wins alone this equals the full derash (no prize paid).
     system_fee: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2),
+        default=0,
+        nullable=False,
+    )
+
+    # Admin-recognized house P&L for the round (bot-aware; see
+    # ``compute_bingo_round_system_gain``). Falls back to ``system_fee`` for
+    # rounds settled before this column existed.
+    system_gain: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2),
+        default=0,
+        nullable=False,
+    )
+
+    # True when every winner was the house bot (no real player among winners).
+    bot_won: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
+    real_stake_total: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2),
+        default=0,
+        nullable=False,
+    )
+
+    bot_stake_total: Mapped[Decimal] = mapped_column(
         Numeric(12, 2),
         default=0,
         nullable=False,
@@ -158,6 +187,15 @@ class BingoGameResult(Base):
         Numeric(12, 2),
         default=0,
         nullable=False,
+    )
+
+    # Player-facing winner label. Set for bot wins to a durable dummy name so
+    # Profile / history never show the bot's real "Bright Bot" identity.
+    # Null for human winners (history falls back to User.first_name) and for
+    # rounds settled before this column existed.
+    public_winner_name: Mapped[str | None] = mapped_column(
+        String(80),
+        nullable=True,
     )
 
     created_at: Mapped[datetime] = mapped_column(

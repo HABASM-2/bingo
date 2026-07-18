@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from fastapi import HTTPException
-from sqlalchemy import and_, cast, func, literal, or_, union, String
+from sqlalchemy import and_, case, cast, func, literal, or_, union, String
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -23,6 +23,7 @@ from app.models.user import User
 from app.models.wallet_transaction import Deposit, WalletTransaction
 
 ZERO = Decimal("0.00")
+ADMIN_ADJUSTMENT_METHOD = "admin_adjustment"
 
 
 def money(value) -> str:
@@ -82,9 +83,29 @@ def game_summary(db: Session, start: datetime | None, end: datetime | None) -> d
     ).join(BingoGame, BingoGame.id == BingoGameResult.game_id).filter(
         _between(BingoGame.created_at, start, end)
     ).one()
-    bingo_fee = db.query(func.coalesce(func.sum(BingoGame.system_fee), 0)).filter(
+    # Prefer bot-aware system_gain when stake breakdown was persisted; else
+    # fall back to legacy prize-facing system_fee (pre-migration / incomplete rows).
+    bingo_gain_expr = case(
+        (
+            or_(
+                BingoGame.bot_won.is_(True),
+                BingoGame.bot_stake_total > 0,
+                BingoGame.real_stake_total > 0,
+            ),
+            BingoGame.system_gain,
+        ),
+        else_=BingoGame.system_fee,
+    )
+    bingo_fee = db.query(func.coalesce(func.sum(bingo_gain_expr), 0)).filter(
         _between(BingoGame.created_at, start, end)
     ).scalar()
+    bingo_bot_rounds = db.query(func.count(BingoGame.id)).filter(
+        _between(BingoGame.created_at, start, end),
+        or_(
+            BingoGame.bot_won.is_(True),
+            BingoGame.bot_stake_total > 0,
+        ),
+    ).scalar() or 0
 
     dama = db.query(
         func.coalesce(func.sum(DamaGameResult.stake_amount), 0),
@@ -140,26 +161,49 @@ def game_summary(db: Session, start: datetime | None, end: datetime | None) -> d
         "plinko": (plinko[0], plinko[1], plinko[2], plinko[3], ZERO),
         "lotto": (lotto[0], lotto_payout, lotto[1], lotto[2], lotto_fee),
     }
+
+    bot_stake, bot_payout = db.query(
+        func.coalesce(func.sum(BingoGameResult.stake_amount), 0),
+        func.coalesce(func.sum(BingoGameResult.amount_won), 0),
+    ).join(User, User.id == BingoGameResult.user_id).join(
+        BingoGame, BingoGame.id == BingoGameResult.game_id
+    ).filter(
+        User.is_bot.is_(True),
+        _between(BingoGame.created_at, start, end),
+    ).one()
+    bot_stake_d = Decimal(bot_stake or 0)
+    bot_payout_d = Decimal(bot_payout or 0)
+
     games = []
-    total_stake = total_payout = total_fee = ZERO
+    total_stake = total_payout = total_fee = total_ggr = ZERO
     for name, (stake, payout, players, rounds, fee) in raw.items():
         stake_d, payout_d, fee_d = Decimal(stake or 0), Decimal(payout or 0), Decimal(fee or 0)
+        # Bingo GGR / system gain uses persisted bot-aware system_gain, not
+        # raw stake−payout (which double-counts house-bot wallet circulation).
+        ggr_d = fee_d if name == "bingo" else (stake_d - payout_d)
         total_stake += stake_d
         total_payout += payout_d
         total_fee += fee_d
-        games.append({
+        total_ggr += ggr_d
+        entry = {
             "game": name,
             "turnover": money(stake_d),
             "payouts": money(payout_d),
-            "ggr": money(stake_d - payout_d),
+            "ggr": money(ggr_d),
             "explicit_system_fee": money(fee_d),
             "unique_players": int(players or 0),
             "rounds_or_plays": int(rounds or 0),
-        })
+        }
+        if name == "bingo":
+            entry["bot_turnover"] = money(bot_stake_d)
+            entry["bot_payouts"] = money(bot_payout_d)
+            entry["bot_pnl"] = money(bot_payout_d - bot_stake_d)
+            entry["bot_rounds"] = int(bingo_bot_rounds)
+        games.append(entry)
     return {
         "turnover": money(total_stake),
         "payouts": money(total_payout),
-        "ggr": money(total_stake - total_payout),
+        "ggr": money(total_ggr),
         "explicit_system_revenue": money(total_fee),
         "activity_label": "database activity in selected range",
         "games": games,
@@ -197,7 +241,10 @@ def dashboard(db: Session, start: datetime | None, end: datetime | None) -> dict
     new_users = db.query(func.count(User.id)).filter(
         _between(User.created_at, start, end)
     ).scalar() or 0
-    liabilities = db.query(func.coalesce(func.sum(User.balance), 0)).scalar()
+    liabilities_with_bots = db.query(func.coalesce(func.sum(User.balance), 0)).scalar()
+    liabilities_without_bots = db.query(
+        func.coalesce(func.sum(User.balance), 0)
+    ).filter(User.is_bot.is_(False)).scalar()
     deposits = db.query(
         func.count(Deposit.id), func.coalesce(func.sum(Deposit.amount), 0)
     ).filter(_between(Deposit.created_at, start, end)).one()
@@ -218,6 +265,7 @@ def dashboard(db: Session, start: datetime | None, end: datetime | None) -> dict
         func.coalesce(func.sum(WithdrawRequest.amount), 0),
     ).filter(WithdrawRequest.status == "PENDING").one()
     games = game_summary(db, start, end)
+    # Default ``wallet_liabilities`` excludes bots (true player liability).
     return {
         "from": start.isoformat() if start else None,
         "to": end.isoformat() if end else None,
@@ -225,7 +273,9 @@ def dashboard(db: Session, start: datetime | None, end: datetime | None) -> dict
         "new_users": new_users,
         "active_users": _active_user_count(db, start, end),
         "active_users_definition": "unique users with persisted game activity in range",
-        "wallet_liabilities": money(liabilities),
+        "wallet_liabilities": money(liabilities_without_bots),
+        "wallet_liabilities_without_bots": money(liabilities_without_bots),
+        "wallet_liabilities_with_bots": money(liabilities_with_bots),
         "deposits": {
             "pending_count": 0,
             "pending_amount": money(0),
@@ -284,9 +334,11 @@ def list_users(
             cast(User.telegram_id, String).ilike(needle),
         ))
     if status == "active":
-        query = query.filter(User.is_active.is_(True))
+        query = query.filter(User.is_active.is_(True), User.is_bot.is_(False))
     elif status == "inactive":
         query = query.filter(User.is_active.is_(False))
+    elif status == "bot":
+        query = query.filter(User.is_bot.is_(True))
     total = query.count()
     ordering = {
         "balance_desc": User.balance.desc(),
@@ -312,6 +364,7 @@ def list_users(
             "deposit_total": money(deposited),
             "withdraw_total": money(withdrawn),
             "status": "active" if user.is_active else "inactive",
+            "is_bot": bool(user.is_bot),
         } for user, deposited, withdrawn, games in rows],
     }
 
@@ -354,6 +407,7 @@ def user_detail(db: Session, user_id: uuid.UUID) -> dict:
             "username": user.username, "first_name": user.first_name,
             "last_name": user.last_name, "balance": money(user.balance),
             "status": "active" if user.is_active else "inactive",
+            "is_bot": bool(user.is_bot),
             "joined_at": user.created_at, "last_activity_at": user.last_seen_at,
         },
         "game_stats": stats,
@@ -379,6 +433,15 @@ def adjust_balance(
     db: Session, admin: User, user_id: uuid.UUID, amount: Decimal,
     reason: str, request_id: uuid.UUID,
 ) -> dict:
+    """Credit/debit a wallet and mirror the delta into payment history.
+
+    Positive amounts also insert a ``deposits`` row (method ``admin_adjustment``)
+    so the credit appears in admin Deposits and profile deposit history.
+    Negative amounts insert an already-``APPROVED`` ``withdraw_requests`` row
+    (same ``id`` / ledger ``reference_id``) so the debit appears in withdraw
+    histories without a Telegram payout flow. Balance is applied only here —
+    the mirrored withdraw is not settled again via ``decide_withdrawal``.
+    """
     if user_id == admin.id:
         raise HTTPException(403, "Administrators cannot adjust their own balance")
     existing = _existing_request(db, admin, request_id)
@@ -401,9 +464,39 @@ def adjust_balance(
         reference_type="ADMIN_ADJUSTMENT", reference_id=request_id,
         description=f"Admin adjustment: {reason[:180]}",
     ))
+    abs_amount = abs(amount)
+    payment_kind = "deposit" if amount > 0 else "withdrawal"
+    if amount > 0:
+        # Unique sms_transaction_id reuses request_id; no SMS row is created.
+        db.add(Deposit(
+            user_id=user.id,
+            amount=abs_amount,
+            method=ADMIN_ADJUSTMENT_METHOD,
+            sms_transaction_id=f"ADMIN-{request_id}",
+        ))
+    else:
+        now = datetime.now(timezone.utc)
+        db.add(WithdrawRequest(
+            id=request_id,
+            user_id=user.id,
+            method=ADMIN_ADJUSTMENT_METHOD,
+            account_name="Admin adjustment",
+            account_number=str(request_id),
+            amount=abs_amount,
+            fee=ZERO,
+            status="APPROVED",
+            processed_at=now,
+        ))
     _audit(
         db, admin, action="balance.adjust", target_type="user", target_id=user.id,
-        reason=reason, before={"balance": before}, after={"balance": after, "amount": amount},
+        reason=reason,
+        before={"balance": before},
+        after={
+            "balance": after,
+            "amount": amount,
+            "payment_kind": payment_kind,
+            "payment_method": ADMIN_ADJUSTMENT_METHOD,
+        },
         request_id=request_id,
     )
     try:
@@ -604,19 +697,19 @@ def game_players(
     if game == "plinko":
         model, timestamp, stake, payout = PlinkoPlay, PlinkoPlay.created_at, PlinkoPlay.stake, PlinkoPlay.payout
         query = db.query(
-            User.id, User.username, User.first_name, func.count(model.id),
+            User.id, User.username, User.first_name, User.is_bot, func.count(model.id),
             func.sum(stake), func.sum(payout), func.max(timestamp),
         ).join(model, model.user_id == User.id).filter(
             model.is_demo.is_(False), _between(timestamp, start, end)
-        ).group_by(User.id, User.username, User.first_name)
+        ).group_by(User.id, User.username, User.first_name, User.is_bot)
     elif game in mapping:
         model, parent, parent_fk, timestamp, stake, payout = mapping[game]
         query = db.query(
-            User.id, User.username, User.first_name, func.count(model.id),
+            User.id, User.username, User.first_name, User.is_bot, func.count(model.id),
             func.sum(stake), func.sum(payout), func.max(timestamp),
         ).join(model, model.user_id == User.id).join(parent, parent.id == parent_fk).filter(
             _between(timestamp, start, end)
-        ).group_by(User.id, User.username, User.first_name)
+        ).group_by(User.id, User.username, User.first_name, User.is_bot)
     else:
         raise HTTPException(404, "Unknown game")
     total = query.count()
@@ -626,9 +719,10 @@ def game_players(
         "activity_label": "persisted activity in selected range",
         "items": [{
             "user_id": str(uid), "username": username, "first_name": first_name,
+            "is_bot": bool(is_bot),
             "plays": plays, "turnover": money(turnover), "payouts": money(payouts),
             "last_played_at": last_played,
-        } for uid, username, first_name, plays, turnover, payouts, last_played in rows],
+        } for uid, username, first_name, is_bot, plays, turnover, payouts, last_played in rows],
     }
 
 
@@ -646,3 +740,102 @@ def audit_feed(db: Session, limit: int, offset: int) -> dict:
             "created_at": row.created_at,
         } for row, user in rows],
     }
+
+
+async def bingo_bot_status() -> dict:
+    """Current Bingo house-bot reserving flag + live board hold count."""
+
+    from app.bingo import house_bot, redis_store
+    from app.bingo.service import DEFAULT_ROOM_ID
+    from app.core.config import settings
+
+    enabled, source = await house_bot.get_bot_enabled()
+    room_id = settings.BINGO_BOT_ROOM_ID or DEFAULT_ROOM_ID
+    boards_held = 0
+    room_status = None
+    bot_user_id = house_bot.cached_bot_user_id()
+    try:
+        room = await redis_store.get_room(room_id)
+        room_status = room.status if room else None
+        if bot_user_id:
+            board_map = await redis_store.get_board_map(room_id)
+            boards_held = len(house_bot.bot_held_boards(board_map, bot_user_id))
+    except Exception:
+        # Status is best-effort; Redis blips should not 500 the admin panel.
+        room_status = None
+
+    if enabled:
+        status = "active"
+    elif room_status and room_status != "lobby" and boards_held > 0:
+        status = "in_round"
+    elif boards_held > 0:
+        status = "draining"
+    else:
+        status = "inactive"
+
+    return {
+        "enabled": enabled,
+        "source": source,
+        "boards_held": boards_held,
+        "status": status,
+        "room_id": room_id,
+        "room_status": room_status,
+    }
+
+
+async def set_bingo_bot_enabled(
+    db: Session,
+    admin: User,
+    enabled: bool,
+    request_id: uuid.UUID | None = None,
+) -> dict:
+    """Persist Redis toggle, audit the change, and return fresh status."""
+
+    from app.bingo import house_bot
+
+    req = request_id or uuid.uuid4()
+    existing = _existing_request(db, admin, req)
+    if existing:
+        if existing.action != "bingo_bot.toggle":
+            raise HTTPException(409, "Request id was used for a different operation")
+        after = existing.after_data or {}
+        status = await bingo_bot_status()
+        status["idempotent"] = True
+        status["enabled"] = bool(after.get("enabled", status["enabled"]))
+        return status
+
+    before = await bingo_bot_status()
+    await house_bot.set_bot_enabled(enabled)
+    # When turning off, kick a drain tick so lobby boards release promptly.
+    if not enabled:
+        try:
+            await house_bot.tick_room(before.get("room_id") or "default")
+        except Exception:
+            pass
+
+    after = await bingo_bot_status()
+    _audit(
+        db,
+        admin,
+        action="bingo_bot.toggle",
+        target_type="bingo_bot",
+        target_id=after.get("room_id"),
+        reason=None,
+        before={"enabled": before["enabled"], "source": before["source"]},
+        after={"enabled": after["enabled"], "source": after["source"]},
+        request_id=req,
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = _existing_request(db, admin, req)
+        if existing and existing.action == "bingo_bot.toggle":
+            status = await bingo_bot_status()
+            status["idempotent"] = True
+            return status
+        raise
+
+    after["idempotent"] = False
+    return after
+

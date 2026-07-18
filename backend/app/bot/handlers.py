@@ -12,6 +12,7 @@ from telegram.ext import ContextTypes
 
 from app.bot.helpers import persist_lang, resolve_lang
 from app.bot.i18n import GAME_TITLES, t
+from app.bot.links import build_invite_link
 from app.bot.keyboards import (
     confirm_cancel_keyboard,
     deposit_menu_keyboard,
@@ -363,9 +364,7 @@ async def invite_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(text, reply_markup=home_keyboard(lang))
             return
 
-        invite_link = (
-            f"https://t.me/{settings.TELEGRAM_BOT_USERNAME}?start={user.referral_code}"
-        )
+        invite_link = build_invite_link(user.referral_code)
         text = t(lang, "invite", link=invite_link)
         markup = home_keyboard(lang)
         if query:

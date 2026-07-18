@@ -91,6 +91,13 @@ class User(Base):
         default=True,
     )
 
+    # System / house participants (e.g. Bingo autofill bot). Not Telegram users.
+    is_bot: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        index=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

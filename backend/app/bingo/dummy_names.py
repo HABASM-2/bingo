@@ -1,0 +1,123 @@
+"""Public-facing dummy first names for Bingo house-bot win ceremonies.
+
+The bot's DB identity (username / first_name / is_bot) is never changed.
+Player-facing winner payloads substitute a stable pick from this list so
+the win splash looks like a normal Telegram player.
+"""
+
+from __future__ import annotations
+
+import hashlib
+
+# ~100 plausible Telegram-style first names (Ethiopian + international mix).
+DUMMY_FIRST_NAMES: tuple[str, ...] = (
+    "Abebe",
+    "Abel",
+    "Abigail",
+    "Abrham",
+    "Adam",
+    "Addis",
+    "Alem",
+    "Alex",
+    "Aman",
+    "Amanuel",
+    "Amir",
+    "Anna",
+    "Aster",
+    "Aya",
+    "Ayana",
+    "Bekele",
+    "Belen",
+    "Ben",
+    "Bereket",
+    "Betty",
+    "Biruk",
+    "Brook",
+    "Caleb",
+    "Chala",
+    "Daniel",
+    "Dawit",
+    "Deborah",
+    "Elias",
+    "Emebet",
+    "Eyasu",
+    "Ezra",
+    "Fana",
+    "Fasika",
+    "Feben",
+    "Feven",
+    "Fikir",
+    "Gabriel",
+    "Gelila",
+    "Getachew",
+    "Hana",
+    "Helen",
+    "Henok",
+    "Hiwot",
+    "Ibssa",
+    "Isaac",
+    "Ismael",
+    "Jember",
+    "Jonathan",
+    "Kaleb",
+    "Kalkidan",
+    "Kidist",
+    "Kidus",
+    "Lidiya",
+    "Liya",
+    "Lulit",
+    "Mahlet",
+    "Marta",
+    "Mary",
+    "Mekdes",
+    "Meklit",
+    "Melaku",
+    "Meron",
+    "Meseret",
+    "Michael",
+    "Miki",
+    "Mimi",
+    "Nahom",
+    "Naomi",
+    "Natnael",
+    "Netsanet",
+    "Noah",
+    "Rahel",
+    "Rediet",
+    "Robel",
+    "Ruth",
+    "Saba",
+    "Samson",
+    "Samuel",
+    "Sara",
+    "Selam",
+    "Semira",
+    "Senait",
+    "Sisay",
+    "Sofia",
+    "Soliana",
+    "Solomon",
+    "Tadesse",
+    "Tewodros",
+    "Tigist",
+    "Tilahun",
+    "Timnit",
+    "Tsion",
+    "Yared",
+    "Yabets",
+    "Yonas",
+    "Yordanos",
+    "Yosef",
+    "Zelalem",
+    "Zewditu",
+    "Zion",
+)
+
+
+def pick_dummy_name(round_id: str, bot_user_id: str) -> str:
+    """Stable first-name pick for one win announcement (same round + bot)."""
+
+    seed = f"{round_id}:{bot_user_id}".encode()
+    digest = hashlib.sha256(seed).hexdigest()
+    idx = int(digest, 16) % len(DUMMY_FIRST_NAMES)
+    return DUMMY_FIRST_NAMES[idx]

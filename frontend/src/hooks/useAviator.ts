@@ -92,6 +92,19 @@ export function useAviator({ token, enabled, onBalance }: UseAviatorOptions) {
     return aviatorWebSocketUrl(token);
   }, [enabled, token]);
 
+  // Drop stale round UI when the tab disconnects so reconnect shows a loader.
+  useEffect(() => {
+    if (enabled) return;
+    setRound(null);
+    setMultiplier(AVIATOR_START_MULT);
+    setDisplayMultiplier(AVIATOR_START_MULT);
+    setHistory([]);
+    setError(null);
+    setPendingAction(null);
+    pendingActionRef.current = null;
+    serverMultRef.current = AVIATOR_START_MULT;
+  }, [enabled]);
+
   const applyRound = useCallback((data: AviatorRoundState & { history?: number[] }) => {
     setRound(data);
     if (data.history) setHistory(data.history);

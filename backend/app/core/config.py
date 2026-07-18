@@ -57,6 +57,26 @@ class Settings(BaseSettings):
     BINGO_RATE_CLAIM_MAX: int = 6          # manual BINGO claims ...
     BINGO_RATE_CLAIM_WINDOW_MS: int = 5000   # ... per this window
 
+    # Bingo house bot — backend-driven autofill for the public lobby.
+    BINGO_BOT_ENABLED: bool = True
+    BINGO_BOT_USERNAME: str = "bright_bingo_bot"
+    BINGO_BOT_DISPLAY_NAME: str = "Bright Bot"
+    # Reserved sentinel telegram_id (negative so it never collides with real TG ids).
+    BINGO_BOT_TELEGRAM_ID: int = -777000001
+    BINGO_BOT_MIN_BOARDS: int = 15
+    BINGO_BOT_MAX_BOARDS: int = 30
+    # Release when distinct real players with ≥1 board exceed this value
+    # (i.e. real_selectors > threshold ⇒ ≥21 when threshold=20).
+    BINGO_BOT_REAL_PLAYER_THRESHOLD: int = 20
+    BINGO_BOT_CLAIM_WINDOW_START_SEC: float = 1.0
+    BINGO_BOT_CLAIM_WINDOW_END_SEC: float = 35.0
+    # Auto-credit house funds when bot wallet falls below this (ETB).
+    BINGO_BOT_MIN_BALANCE: str = "5000"
+    BINGO_BOT_TOPUP_AMOUNT: str = "20000"
+    BINGO_BOT_INITIAL_BALANCE: str = "20000"
+    # Only auto-fill this room id (shared public lobby).
+    BINGO_BOT_ROOM_ID: str = "default"
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"

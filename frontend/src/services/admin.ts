@@ -16,6 +16,10 @@ export interface GameMetric {
   explicit_system_fee: string;
   unique_players: number;
   rounds_or_plays: number;
+  bot_turnover?: string;
+  bot_payouts?: string;
+  bot_pnl?: string;
+  bot_rounds?: number;
 }
 
 export interface Dashboard {
@@ -23,6 +27,8 @@ export interface Dashboard {
   new_users: number;
   active_users: number;
   wallet_liabilities: string;
+  wallet_liabilities_without_bots?: string;
+  wallet_liabilities_with_bots?: string;
   turnover: string;
   payouts: string;
   ggr: string;
@@ -54,6 +60,7 @@ export interface AdminUser {
   deposit_total: string;
   withdraw_total: string;
   status: string;
+  is_bot?: boolean;
 }
 
 export interface Payment {
@@ -178,6 +185,7 @@ export const getGamePlayers = async (
   user_id: string;
   username: string | null;
   first_name: string;
+  is_bot?: boolean;
   plays: number;
   turnover: string;
   payouts: string;
@@ -200,4 +208,80 @@ export const getAudit = async (params: {
       limit: params.limit ?? ADMIN_PAGE_SIZE,
       offset: params.offset ?? 0,
     },
+  })).data;
+
+export interface BingoBotStatus {
+  enabled: boolean;
+  source: "redis" | "env";
+  boards_held: number;
+  status: "active" | "inactive" | "draining" | "in_round";
+  room_id?: string;
+  room_status?: string | null;
+  idempotent?: boolean;
+}
+
+export const getBingoBot = async (): Promise<BingoBotStatus> =>
+  (await api.get("/admin/bingo-bot")).data;
+
+export const setBingoBot = async (
+  enabled: boolean,
+  requestId?: string,
+): Promise<BingoBotStatus> =>
+  (await api.post("/admin/bingo-bot", {
+    enabled,
+    request_id: requestId,
+  })).data;
+
+export type RetentionOption =
+  | "all"
+  | "games_only"
+  | "7d"
+  | "14d"
+  | "21d"
+  | "30d"
+  | "60d"
+  | "90d"
+  | "120d"
+  | "150d";
+
+export interface RetentionPreview {
+  option: RetentionOption;
+  cutoff: string | null;
+  confirmation_required: string;
+  keeps_users: boolean;
+  keeps_payments?: boolean;
+  zeros_balances: boolean;
+  flushes_redis_game_keys: boolean;
+  users_kept: number;
+  balances_to_zero: number;
+  counts: Record<string, number>;
+  total_rows: number;
+}
+
+export interface RetentionPurgeResult {
+  idempotent: boolean;
+  option: RetentionOption;
+  deleted: Record<string, number>;
+  balances_zeroed: number;
+  redis_keys_deleted: number;
+  users_kept: number;
+  cutoff?: string | null;
+}
+
+export const previewDataRetention = async (
+  option: RetentionOption,
+): Promise<RetentionPreview> =>
+  (await api.get("/admin/data-retention/preview", { params: { option } })).data;
+
+export const purgeDataRetention = async (payload: {
+  option: RetentionOption;
+  confirmation: string;
+  reason: string;
+  requestId: string;
+}): Promise<RetentionPurgeResult> =>
+  (await api.post("/admin/data-retention/purge", {
+    option: payload.option,
+    confirmation: payload.confirmation,
+    reason: payload.reason,
+    request_id: payload.requestId,
   })).data;

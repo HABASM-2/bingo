@@ -12,6 +12,10 @@ export interface AuthUser {
   last_name?: string | null;
   photo_url?: string | null;
   balance: string;
+  /** Unique invite code; used as Telegram `?start=` payload. */
+  referral_code?: string | null;
+  /** Prefabricated `https://t.me/<bot>?start=<code>` when bot username is configured. */
+  invite_link?: string | null;
 }
 
 export interface TelegramLoginResponse {

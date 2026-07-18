@@ -40,6 +40,8 @@ export default function App() {
       firstName={user.first_name ?? t("app.defaultPlayer")}
       authBalance={user.balance}
       accessToken={token}
+      referralCode={user.referral_code ?? null}
+      inviteLink={user.invite_link ?? null}
     />
   );
 }
