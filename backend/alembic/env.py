@@ -31,6 +31,8 @@ from app.models import (  # noqa: F401
     LottoReservationRequest,
     LottoWinner,
     AdminAuditLog,
+    AdminUser,
+    PaymentAccount,
 )
 
 print("TABLES FOUND BY ALEMBIC:")

@@ -160,6 +160,26 @@ export interface ToastMessage {
   message: string;
 }
 
+/** Cross-tab Lotto notice delivered via Bingo (or other) sockets. */
+export interface LottoNoticeMessage {
+  type: "lotto_notice";
+  /** `pre_draw` = game started nudge. `results` is legacy (clients ignore). */
+  kind: "pre_draw" | "results";
+  round_id?: string;
+  stake: string;
+  seconds?: number;
+  round_code?: string;
+  summary?: string;
+  winners?: Array<{
+    rank: number;
+    number: number;
+    display_name: string;
+    prize: string;
+    is_bot?: boolean;
+    user_id?: string;
+  }>;
+}
+
 export interface BallMessage {
   type: "ball";
   number: number;
@@ -203,6 +223,7 @@ export type BingoServerMessage =
   | BoardDeltaMessage
   | LobbyTickMessage
   | ToastMessage
+  | LottoNoticeMessage
   | BallMessage
   | BingoResultMessage
   | GameOverMessage

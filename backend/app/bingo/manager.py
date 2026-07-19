@@ -156,6 +156,26 @@ class ConnectionManager:
 
         await self._safe_send(conn, message)
 
+    async def send_to_user(self, user_id: str, message: dict) -> bool:
+        """Deliver ``message`` to ``user_id`` in any Bingo room on this process.
+
+        Bingo sockets stay connected while the Mini App is open (any tab), so
+        this is the cross-tab in-app notification channel.
+        """
+        targets = [
+            conn
+            for room_connections in list(self._rooms.values())
+            for uid, conn in room_connections.items()
+            if uid == user_id
+        ]
+        if not targets:
+            return False
+        await asyncio.gather(
+            *(self._safe_send(conn, message) for conn in targets),
+            return_exceptions=True,
+        )
+        return True
+
     async def deliver_local(self, room_id: str, message: dict) -> None:
         """Send a message to every connection this instance holds for the
         room. Called both for locally-produced events and for events fanned

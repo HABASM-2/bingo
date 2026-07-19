@@ -6,6 +6,8 @@ export interface LottoReservation {
   number: number;
   user_id: string;
   display_name: string;
+  /** First 5 letters of display_name for compact board labels. */
+  label5?: string;
   initials: string;
 }
 
@@ -32,6 +34,8 @@ export interface LottoRoom {
   reserve_amount: string;
   countdown_started_at: string | null;
   draw_scheduled_at: string | null;
+  /** End of the pre-draw wait (= draw_scheduled_at). */
+  pre_draw_ends_at?: string | null;
   drawing_started_at: string | null;
   completed_at: string | null;
   reservations: LottoReservation[];

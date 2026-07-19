@@ -227,6 +227,7 @@ export default function BingoGame({
     secondsLeft,
     gameOver,
     toast,
+    lottoNotice,
     selectBoard,
     deselectBoard,
     deselectAll,
@@ -623,6 +624,13 @@ export default function BingoGame({
       {onBingoTab && toast && (
         <div className="fixed bottom-28 left-1/2 z-40 w-[88%] max-w-sm -translate-x-1/2 rounded-2xl bg-[#4C1D95] px-5 py-3 text-center text-sm font-semibold text-white shadow-2xl">
           {toast}
+        </div>
+      )}
+
+      {/* Cross-tab Lotto started notice (self-dismisses). Hidden on Lotto. */}
+      {tab !== "lotto" && lottoNotice && (
+        <div className="fixed bottom-28 left-1/2 z-50 w-[88%] max-w-sm -translate-x-1/2 rounded-2xl border border-amber-300/40 bg-[#1E3A5F] px-5 py-3 text-center text-sm font-semibold text-amber-50 shadow-2xl">
+          {lottoNotice}
         </div>
       )}
     </Shell>

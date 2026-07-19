@@ -118,6 +118,13 @@ class WithdrawRequest(Base):
         nullable=True,
     )
 
+    # House payout-source account used when admin approves (optional).
+    paid_from_account_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("payment_accounts.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

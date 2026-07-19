@@ -63,6 +63,14 @@ async def reserve(
     await hub.send_user(
         str(user.id), {"type": "wallet", "balance": result["balance"]}
     )
+    # Pre-draw notices when this reservation filled the room (idempotent).
+    if (
+        not result.get("replayed")
+        and result.get("round", {}).get("status") == "countdown"
+    ):
+        from app.lotto import notifications as lotto_notify
+
+        lotto_notify.schedule_pre_draw(result["round"]["id"])
     return result
 
 

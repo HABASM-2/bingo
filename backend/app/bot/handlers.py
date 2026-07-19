@@ -23,9 +23,15 @@ from app.bot.keyboards import (
     main_menu_keyboard,
     open_game_keyboard,
     support_keyboard,
+    withdraw_method_keyboard,
+    back_home_row,
 )
 from app.core.config import settings
 from app.db.database import SessionLocal
+from app.admin.payment_accounts import (
+    get_enabled_deposit_account,
+    list_enabled_public,
+)
 from app.models.request_tr import TransferRequest, WithdrawRequest
 from app.models.sms_transaction import SMSTransaction
 from app.models.user import User
@@ -33,28 +39,6 @@ from app.models.wallet_transaction import Deposit
 from app.services.auth_service import AuthService
 from app.services.sms_parser import SMSParser
 
-DEPOSIT_METHODS = {
-    "telebirr": {
-        "title_key": "deposit.title.telebirr",
-        "account_name": "Telegram Games",
-        "account_number": "0912345678",
-    },
-    "cbe": {
-        "title_key": "deposit.title.cbe",
-        "account_name": "Telegram Games",
-        "account_number": "1000123456789",
-    },
-    "cbebirr": {
-        "title_key": "deposit.title.cbebirr",
-        "account_name": "Telegram Games",
-        "account_number": "0911111111",
-    },
-    "boa": {
-        "title_key": "deposit.title.boa",
-        "account_name": "Telegram Games",
-        "account_number": "1234567890",
-    },
-}
 
 async def _answer(query) -> None:
     try:
@@ -401,18 +385,27 @@ async def instruction_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def deposit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = resolve_lang(update, context)
     query = update.callback_query
+    db = SessionLocal()
+    try:
+        accounts = list_enabled_public(db, "deposit")["items"]
+    finally:
+        db.close()
+
+    if not accounts:
+        text = t(lang, "deposit.empty")
+        markup = InlineKeyboardMarkup([back_home_row(lang)])
+    else:
+        text = t(lang, "deposit.menu")
+        markup = deposit_menu_keyboard(lang, accounts)
+
     if query:
         await _answer(query)
-        await _edit_or_reply(
-            query,
-            t(lang, "deposit.menu"),
-            deposit_menu_keyboard(lang),
-        )
+        await _edit_or_reply(query, text, markup)
     else:
         await update.message.reply_text(
-            t(lang, "deposit.menu"),
+            text,
             parse_mode="HTML",
-            reply_markup=deposit_menu_keyboard(lang),
+            reply_markup=markup,
         )
 
 
@@ -420,42 +413,52 @@ async def deposit_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await deposit_menu(update, context)
 
 
-async def show_deposit_method(
+async def show_deposit_account(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
-    method: str,
+    account_id: uuid.UUID,
 ):
     query = update.callback_query
     await _answer(query)
     lang = resolve_lang(update, context)
-    payment = DEPOSIT_METHODS[method]
+    db = SessionLocal()
+    try:
+        account = get_enabled_deposit_account(db, account_id)
+    finally:
+        db.close()
+
+    if not account:
+        await _edit_or_reply(
+            query,
+            t(lang, "deposit.empty"),
+            InlineKeyboardMarkup([back_home_row(lang)]),
+        )
+        return
+
+    title = t(lang, "deposit.title.generic", bank=account.bank)
     await query.edit_message_text(
         text=t(
             lang,
             "deposit.method",
-            title=t(lang, payment["title_key"]),
-            account_name=payment["account_name"],
-            account_number=payment["account_number"],
+            title=title,
+            bank=account.bank,
+            account_name=account.account_name,
+            account_number=account.account_number,
         ),
         parse_mode="HTML",
         reply_markup=deposit_method_keyboard(lang),
     )
 
 
-async def deposit_telebirr(update, context):
-    await show_deposit_method(update, context, "telebirr")
-
-
-async def deposit_cbe(update, context):
-    await show_deposit_method(update, context, "cbe")
-
-
-async def deposit_cbebirr(update, context):
-    await show_deposit_method(update, context, "cbebirr")
-
-
-async def deposit_boa(update, context):
-    await show_deposit_method(update, context, "boa")
+async def deposit_account_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    raw = (query.data or "").replace("deposit_account_", "", 1)
+    try:
+        account_id = uuid.UUID(raw)
+    except ValueError:
+        await _answer(query)
+        return
+    await show_deposit_account(update, context, account_id)
 
 
 async def deposit_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -833,22 +836,7 @@ async def withdraw_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard: list[list[InlineKeyboardButton]] = []
     if not pending:
-        keyboard.extend(
-            [
-                [
-                    InlineKeyboardButton(
-                        t(lang, "method.telebirr"),
-                        callback_data="withdraw_method_telebirr",
-                    )
-                ],
-                [
-                    InlineKeyboardButton(
-                        t(lang, "method.cbe"),
-                        callback_data="withdraw_method_cbe",
-                    )
-                ],
-            ]
-        )
+        keyboard.extend(withdraw_method_keyboard(lang))
         text = t(lang, "withdraw.select")
     else:
         keyboard.append(

@@ -77,6 +77,16 @@ class Settings(BaseSettings):
     # Only auto-fill this room id (shared public lobby).
     BINGO_BOT_ROOM_ID: str = "default"
 
+    # Lotto house bot — fills open stake rooms with gradual number claims.
+    LOTTO_BOT_ENABLED: bool = False
+    # Inclusive target numbers to reserve (1–25 axis). Max 0 is not used; clamp 1–25.
+    LOTTO_BOT_RESERVE_MIN: int = 3
+    LOTTO_BOT_RESERVE_MAX: int = 8
+    # Release when distinct real users holding ≥1 number meet/exceed this.
+    LOTTO_BOT_REAL_PLAYER_THRESHOLD: int = 15
+    LOTTO_BOT_CLAIM_WINDOW_START_SEC: float = 1.0
+    LOTTO_BOT_CLAIM_WINDOW_END_SEC: float = 45.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         extra="ignore"

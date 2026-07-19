@@ -13,6 +13,8 @@ from app.models.lotto_game import (
     LottoWinner,
 )
 from app.models.admin_audit_log import AdminAuditLog
+from app.models.admin_user import AdminUser
+from app.models.payment_account import PaymentAccount
 
 __all__ = [
     "User",
@@ -35,4 +37,6 @@ __all__ = [
     "LottoReservationRequest",
     "LottoWinner",
     "AdminAuditLog",
+    "AdminUser",
+    "PaymentAccount",
 ]

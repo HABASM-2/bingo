@@ -92,16 +92,27 @@ def language_keyboard(lang: str) -> InlineKeyboardMarkup:
     )
 
 
-def deposit_menu_keyboard(lang: str) -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton(t(lang, "method.telebirr"), callback_data="deposit_telebirr")],
-            [InlineKeyboardButton(t(lang, "method.cbe"), callback_data="deposit_cbe")],
-            [InlineKeyboardButton(t(lang, "method.cbebirr"), callback_data="deposit_cbebirr")],
-            [InlineKeyboardButton(t(lang, "method.boa"), callback_data="deposit_boa")],
-            back_home_row(lang),
-        ]
-    )
+def deposit_menu_keyboard(
+    lang: str,
+    accounts: list[dict] | None = None,
+) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for account in accounts or []:
+        label = t(
+            lang,
+            "btn.deposit_account",
+            bank=account.get("bank") or "Bank",
+        )
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    label,
+                    callback_data=f"deposit_account_{account['id']}",
+                )
+            ]
+        )
+    rows.append(back_home_row(lang))
+    return InlineKeyboardMarkup(rows)
 
 
 def deposit_method_keyboard(lang: str) -> InlineKeyboardMarkup:
@@ -111,6 +122,23 @@ def deposit_method_keyboard(lang: str) -> InlineKeyboardMarkup:
             [InlineKeyboardButton(t(lang, "btn.back"), callback_data="deposit")],
         ]
     )
+
+
+def withdraw_method_keyboard(lang: str) -> list[list[InlineKeyboardButton]]:
+    return [
+        [
+            InlineKeyboardButton(
+                t(lang, "method.telebirr"),
+                callback_data="withdraw_method_telebirr",
+            )
+        ],
+        [
+            InlineKeyboardButton(
+                t(lang, "method.cbe"),
+                callback_data="withdraw_method_cbe",
+            )
+        ],
+    ]
 
 
 def support_keyboard(lang: str) -> InlineKeyboardMarkup:

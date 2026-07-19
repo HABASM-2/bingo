@@ -45,6 +45,14 @@ class LottoHub:
         async with self._lock:
             self._connections.pop(token, None)
 
+    def is_connected(self, user_id: str) -> bool:
+        """True when this process holds an active Lotto WebSocket for ``user_id``.
+
+        The Mini App only opens the Lotto socket while the Lotto tab is active,
+        so this is the presence signal for "user is on Lotto navigation".
+        """
+        return any(uid == user_id for uid, _ in self._connections.values())
+
     async def _send_user_local(self, user_id: str, message: dict) -> None:
         payload = json.dumps(message)
         targets = [

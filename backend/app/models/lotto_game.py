@@ -7,6 +7,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKey,
@@ -55,6 +56,30 @@ class LottoRound(Base):
     second_prize: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     third_prize: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
     reserve_amount: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # Admin-recognized P&L (bot-aware; see compute_lotto_round_system_gain).
+    # Falls back to reserve_amount for rounds settled before these columns existed.
+    # Formula: system_gain = (real_stakes − real_prizes) − (bot_stakes × 0.04)
+    # May be negative when reals win large prizes; separate from house_fee.
+    system_gain: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=0, nullable=False
+    )
+    # True when every prize rank went to a bot (no real among 1st/2nd/3rd).
+    bot_won: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    real_stake_total: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=0, nullable=False
+    )
+    bot_stake_total: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=0, nullable=False
+    )
+    # Prize amounts paid to bot winners (ranks 1–3); analytics only (not GGR).
+    bot_prizes: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=0, nullable=False
+    )
+    # Real-only share of the 4% reserve (ROUND_DOWN); see compute_lotto_house_fee.
+    # house_fee = max(0, real_stakes × 0.04); analytics only — not system_gain.
+    house_fee: Mapped[Decimal] = mapped_column(
+        Numeric(12, 2), default=0, nullable=False
+    )
     countdown_started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
@@ -104,6 +129,9 @@ class LottoReservation(Base):
     )
     number: Mapped[int] = mapped_column(Integer, nullable=False)
     stake: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False)
+    # Public board label for the round (dummy for bot; real first_name for humans).
+    # Persisted so every client sees the same name; admin still uses User.is_bot.
+    display_name: Mapped[str | None] = mapped_column(String(48), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

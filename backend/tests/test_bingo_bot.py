@@ -329,15 +329,29 @@ class BotConfigDefaultsTests(TestCase):
             fields["BINGO_BOT_MAX_BOARDS"].default,
         )
 
-    def test_pick_target_stays_within_configured_bounds(self):
+    def test_pick_target_uses_random_range(self):
+        rng = random.Random(0)
+        targets = {house_bot._pick_target(400, 2, 10, rng) for _ in range(40)}
+        self.assertTrue(targets)
+        self.assertTrue(all(2 <= n <= 10 for n in targets))
+        self.assertGreater(len(targets), 1)
+
+        self.assertEqual(house_bot._pick_target(10, 20, 30, random.Random(1)), 10)
+        self.assertEqual(house_bot._pick_target(400, 0, 0, random.Random(1)), 0)
+        self.assertEqual(house_bot._pick_target(0, 2, 10, random.Random(1)), 0)
+        self.assertEqual(house_bot._pick_target(400, 7, 7, random.Random(1)), 7)
+
+    def test_default_reserve_range_is_15_to_30(self):
         with mock.patch.object(house_bot.settings, "BINGO_BOT_MIN_BOARDS", 15), mock.patch.object(
             house_bot.settings, "BINGO_BOT_MAX_BOARDS", 30
         ):
-            rng = random.Random(42)
-            samples = {house_bot._pick_target(rng, free_count=400) for _ in range(80)}
-        self.assertTrue(samples)
-        self.assertGreaterEqual(min(samples), 15)
-        self.assertLessEqual(max(samples), 30)
+            self.assertEqual(house_bot.default_reserve_range(), (15, 30))
+
+    def test_default_reserve_count_is_20(self):
+        with mock.patch.object(house_bot.settings, "BINGO_BOT_MIN_BOARDS", 15), mock.patch.object(
+            house_bot.settings, "BINGO_BOT_MAX_BOARDS", 30
+        ):
+            self.assertEqual(house_bot.default_reserve_count(), 20)
 
     def test_parse_enabled_flag(self):
         self.assertTrue(house_bot._parse_enabled_flag("1"))
@@ -365,6 +379,43 @@ class BotConfigDefaultsTests(TestCase):
                 enabled, source = await house_bot.get_bot_enabled()
             self.assertTrue(enabled)
             self.assertEqual(source, "redis")
+
+        asyncio.run(run())
+
+    def test_get_bot_reserve_range_falls_back_to_default(self):
+        import asyncio
+
+        async def run():
+            redis = mock.AsyncMock()
+            redis.get = mock.AsyncMock(return_value=None)
+            with mock.patch("app.bingo.house_bot.redis_store.get_redis", return_value=redis):
+                lo, hi, source = await house_bot.get_bot_reserve_range()
+            self.assertEqual((lo, hi), house_bot.default_reserve_range())
+            self.assertEqual(source, "default")
+
+            async def fake_get(key):
+                mapping = {
+                    house_bot.BOT_RESERVE_MIN_KEY: "3",
+                    house_bot.BOT_RESERVE_MAX_KEY: "9",
+                }
+                return mapping.get(key)
+
+            redis.get = mock.AsyncMock(side_effect=fake_get)
+            with mock.patch("app.bingo.house_bot.redis_store.get_redis", return_value=redis):
+                lo, hi, source = await house_bot.get_bot_reserve_range()
+            self.assertEqual((lo, hi), (3, 9))
+            self.assertEqual(source, "redis")
+
+            async def legacy_get(key):
+                if key == house_bot.BOT_RESERVE_COUNT_KEY:
+                    return "27"
+                return None
+
+            redis.get = mock.AsyncMock(side_effect=legacy_get)
+            with mock.patch("app.bingo.house_bot.redis_store.get_redis", return_value=redis):
+                lo, hi, source = await house_bot.get_bot_reserve_range()
+            self.assertEqual((lo, hi), (27, 27))
+            self.assertEqual(source, "legacy")
 
         asyncio.run(run())
 
@@ -528,6 +579,10 @@ class HouseBotIsolatedTests(unittest.IsolatedAsyncioTestCase):
     async def _tick_with_mocks(self, **extra):
         board_map = extra.pop("board_map", {})
         intent = extra.pop("intent", None)
+        reserve_count = extra.pop("reserve_count", 20)
+        reserve_min = extra.pop("reserve_min", reserve_count)
+        reserve_max = extra.pop("reserve_max", reserve_count)
+        enabled = extra.pop("enabled", True)
 
         claimed: list[int] = []
         released: list[int] = []
@@ -566,7 +621,12 @@ class HouseBotIsolatedTests(unittest.IsolatedAsyncioTestCase):
             mock.patch.object(
                 house_bot,
                 "get_bot_enabled",
-                new=mock.AsyncMock(return_value=(extra.pop("enabled", True), "env")),
+                new=mock.AsyncMock(return_value=(enabled, "env")),
+            ),
+            mock.patch.object(
+                house_bot,
+                "get_bot_reserve_range",
+                new=mock.AsyncMock(return_value=(reserve_min, reserve_max, "default")),
             ),
             mock.patch.object(
                 house_bot, "load_intent", new=mock.AsyncMock(return_value=intent)

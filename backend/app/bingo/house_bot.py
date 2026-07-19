@@ -12,8 +12,10 @@ Real-player threshold semantics
 in the lobby reservation hash (``bingo:room:{id}:boards``).
 
 * If ``real_selectors <= BINGO_BOT_REAL_PLAYER_THRESHOLD`` (default 20):
-  the bot may hold a target of ``randint(min, max)`` boards (15–30) and plays
-  as a normal participant when the round locks.
+  the bot may hold a target of ``randint(reserve_min, reserve_max)`` boards
+  (admin Redis range, default env ``BINGO_BOT_MIN/MAX_BOARDS``) and plays as
+  a normal participant when the round locks. ``reserve_max=0`` means no new
+  claims this window. When min=max, the target is that fixed N each round.
 * If ``real_selectors > threshold`` (i.e. ≥21 when threshold=20): the bot
   **starts releasing** its reservations so it is not counted among the busy
   lobby's seated players. New claims are forbidden under pressure.
@@ -36,12 +38,15 @@ Stakes debit at round start via the normal ``BINGO_STAKE`` path. When the bot
 wallet falls below ``BINGO_BOT_MIN_BALANCE``, house funds are credited with
 ``BINGO_BOT_TOPUP`` ledger rows (auditable).
 
-Runtime enable flag
--------------------
+Runtime enable flag + reserve range
+-----------------------------------
 Admins can toggle reserving at runtime via Redis key ``bingo:bot:enabled``
 (``"1"`` / ``"0"``). When the key is missing, ``BINGO_BOT_ENABLED`` is used.
-A Redis flush therefore resets to the env default. Each lobby tick re-reads
-the flag so toggles apply without a process restart.
+Board target range is Redis ``bingo:bot:reserve_min`` + ``bingo:bot:reserve_max``
+(integers 0–50, min≤max). Legacy ``bingo:bot:reserve_count`` is still read as
+min=max for one release. Missing keys fall back to env min/max boards. A Redis
+flush therefore resets to env/default. Each lobby tick re-reads flags so
+toggles apply without a process restart.
 """
 
 from __future__ import annotations
@@ -69,8 +74,46 @@ BOT_TICK_LOCK_KEY = "bingo:bot:{room_id}:tick"
 BOT_TICK_LOCK_TTL_MS = 2500
 # Admin runtime toggle. Survives restarts until Redis is flushed.
 BOT_ENABLED_KEY = "bingo:bot:enabled"
+# Inclusive random board target range when enabled. Missing → default_reserve_range().
+BOT_RESERVE_MIN_KEY = "bingo:bot:reserve_min"
+BOT_RESERVE_MAX_KEY = "bingo:bot:reserve_max"
+# Legacy exact count (treated as min=max). Prefer min/max keys going forward.
+BOT_RESERVE_COUNT_KEY = "bingo:bot:reserve_count"
+RESERVE_COUNT_MIN = 0
+RESERVE_COUNT_MAX = 50
+DEFAULT_RESERVE_COUNT = 20
 
 _cached_bot_id: str | None = None
+
+
+def clamp_reserve_count(value: int) -> int:
+    return max(RESERVE_COUNT_MIN, min(RESERVE_COUNT_MAX, int(value)))
+
+
+def normalize_reserve_range(lo: int, hi: int) -> tuple[int, int]:
+    """Clamp both ends to 0–50 and ensure min ≤ max."""
+    a = clamp_reserve_count(lo)
+    b = clamp_reserve_count(hi)
+    if a > b:
+        a, b = b, a
+    return a, b
+
+
+def default_reserve_range() -> tuple[int, int]:
+    """Env ``BINGO_BOT_MIN/MAX_BOARDS`` clamped to 0–50 (defaults 15–30)."""
+    return normalize_reserve_range(
+        settings.BINGO_BOT_MIN_BOARDS,
+        settings.BINGO_BOT_MAX_BOARDS,
+    )
+
+
+def default_reserve_count() -> int:
+    """Prefer 20 when it lies in the default range; else the range midpoint."""
+    lo, hi = default_reserve_range()
+    preferred = DEFAULT_RESERVE_COUNT
+    if lo <= preferred <= hi:
+        return preferred
+    return (lo + hi) // 2
 
 
 def _parse_enabled_flag(raw: str | bytes | None) -> bool | None:
@@ -114,6 +157,92 @@ async def clear_bot_enabled_override() -> None:
 
     redis = redis_store.get_redis()
     await redis.delete(BOT_ENABLED_KEY)
+
+
+async def get_bot_reserve_range() -> tuple[int, int, Literal["redis", "default", "legacy"]]:
+    """Resolve ``(min, max)`` board target. Prefers Redis min/max; else legacy count; else default."""
+
+    redis = redis_store.get_redis()
+    raw_min = await redis.get(BOT_RESERVE_MIN_KEY)
+    raw_max = await redis.get(BOT_RESERVE_MAX_KEY)
+    if raw_min is not None and raw_max is not None:
+        try:
+            text_min = raw_min.decode() if isinstance(raw_min, (bytes, bytearray)) else str(raw_min)
+            text_max = raw_max.decode() if isinstance(raw_max, (bytes, bytearray)) else str(raw_max)
+            lo, hi = normalize_reserve_range(int(text_min.strip()), int(text_max.strip()))
+            return lo, hi, "redis"
+        except (TypeError, ValueError):
+            pass
+
+    # One of min/max alone: combine with the other or default.
+    if raw_min is not None or raw_max is not None:
+        try:
+            default_lo, default_hi = default_reserve_range()
+            if raw_min is not None:
+                text_min = raw_min.decode() if isinstance(raw_min, (bytes, bytearray)) else str(raw_min)
+                lo = clamp_reserve_count(int(text_min.strip()))
+            else:
+                lo = default_lo
+            if raw_max is not None:
+                text_max = raw_max.decode() if isinstance(raw_max, (bytes, bytearray)) else str(raw_max)
+                hi = clamp_reserve_count(int(text_max.strip()))
+            else:
+                hi = default_hi
+            return (*normalize_reserve_range(lo, hi), "redis")
+        except (TypeError, ValueError):
+            pass
+
+    raw = await redis.get(BOT_RESERVE_COUNT_KEY)
+    if raw is not None:
+        text = raw.decode() if isinstance(raw, (bytes, bytearray)) else str(raw)
+        try:
+            n = clamp_reserve_count(int(text.strip()))
+            return n, n, "legacy"
+        except (TypeError, ValueError):
+            pass
+
+    lo, hi = default_reserve_range()
+    return lo, hi, "default"
+
+
+async def set_bot_reserve_range(reserve_min: int, reserve_max: int) -> tuple[int, int]:
+    """Persist min/max in Redis (no TTL). Clears legacy exact-count key. Returns clamped pair."""
+
+    lo, hi = normalize_reserve_range(reserve_min, reserve_max)
+    redis = redis_store.get_redis()
+    await redis.set(BOT_RESERVE_MIN_KEY, str(lo))
+    await redis.set(BOT_RESERVE_MAX_KEY, str(hi))
+    await redis.delete(BOT_RESERVE_COUNT_KEY)
+    return lo, hi
+
+
+async def get_bot_reserve_count() -> tuple[int, Literal["redis", "default", "legacy"]]:
+    """Deprecated: returns range max for callers that still expect a single count."""
+
+    lo, hi, source = await get_bot_reserve_range()
+    mapped: Literal["redis", "default", "legacy"] = (
+        "default" if source == "default" else ("legacy" if source == "legacy" else "redis")
+    )
+    return hi if lo != hi else lo, mapped
+
+
+async def set_bot_reserve_count(count: int) -> int:
+    """Legacy: persist exact count as min=max. Returns clamped value."""
+
+    value = clamp_reserve_count(count)
+    await set_bot_reserve_range(value, value)
+    return value
+
+
+async def clear_bot_reserve_count_override() -> None:
+    """Remove Redis reserve overrides so the next read uses the default range."""
+
+    redis = redis_store.get_redis()
+    await redis.delete(BOT_RESERVE_MIN_KEY, BOT_RESERVE_MAX_KEY, BOT_RESERVE_COUNT_KEY)
+
+
+async def clear_bot_reserve_range_override() -> None:
+    await clear_bot_reserve_count_override()
 
 
 @dataclass
@@ -433,13 +562,21 @@ async def bot_release_all(room_id: str, bot_user_id: str) -> list[int]:
     return held
 
 
-def _pick_target(rng: random.Random, free_count: int) -> int:
-    lo = max(0, settings.BINGO_BOT_MIN_BOARDS)
-    hi = max(lo, settings.BINGO_BOT_MAX_BOARDS)
-    if free_count <= 0:
+def _pick_target(
+    free_count: int,
+    reserve_min: int,
+    reserve_max: int,
+    rng: random.Random,
+) -> int:
+    """Random count in [min, max] inclusive, capped by free boards. max≤0 ⇒ none."""
+    lo, hi = normalize_reserve_range(reserve_min, reserve_max)
+    if free_count <= 0 or hi <= 0:
         return 0
-    target = rng.randint(lo, hi)
-    return min(target, free_count)
+    hi = min(hi, free_count)
+    lo = min(lo, hi)
+    if hi <= 0:
+        return 0
+    return rng.randint(lo, hi)
 
 
 async def _start_round_plan(
@@ -456,7 +593,8 @@ async def _start_round_plan(
     # Leave headroom so real players can still pick when the lobby is warming.
     reserved_headroom = min(30, max(5, len(free) // 10))
     usable = max(0, len(free) - reserved_headroom)
-    target = _pick_target(rng, usable)
+    reserve_min, reserve_max, _source = await get_bot_reserve_range()
+    target = _pick_target(usable, reserve_min, reserve_max, rng)
 
     schedule = build_claim_schedule(
         lobby_started,

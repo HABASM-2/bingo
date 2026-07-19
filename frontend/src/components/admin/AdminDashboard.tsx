@@ -6,21 +6,48 @@ import axios from "axios";
 import { useI18n } from "../../i18n";
 import {
   ADMIN_PAGE_SIZE,
-  adjustBalance, decideWithdrawal, getAudit, getBingoBot, getDashboard, getDeposits,
-  getGamePlayers, getUserDetail, getUsers, getWithdrawals, previewDataRetention,
-  purgeDataRetention, setBingoBot,
-  type AdminUser, type AuditItem, type BingoBotStatus, type Dashboard, type Payment,
-  type RetentionOption, type RetentionPreview,
+  addAdmin, adjustBalance, createPaymentAccount, decideWithdrawal, deleteAdminUser,
+  deleteAllAdminUsers, deletePaymentAccount, getAdminMe, getAudit, getBingoBot,
+  getDashboard, getDeposits, getGamePlayers, getLottoBot, getUserDetail, getUsers,
+  getWithdrawals, listAdmins, listPaymentAccounts, previewDataRetention, purgeDataRetention,
+  removeAdmin, sendAdminBroadcast, setBingoBot, setLottoBot, updatePaymentAccount,
+  type AdminMe, type AdminUser, type AuditItem, type BingoBotStatus, type BroadcastResult,
+  type Dashboard, type LottoBotStatus, type ManagedAdmin, type Payment, type PaymentAccount,
+  type PaymentAccountKind, type RetentionOption, type RetentionPreview,
 } from "../../services/admin";
 
-type Section = "overview" | "users" | "deposits" | "withdrawals" | "games" | "audit" | "maintenance";
+type Section =
+  | "overview"
+  | "users"
+  | "deposits"
+  | "withdrawals"
+  | "accounts"
+  | "games"
+  | "messages"
+  | "admins"
+  | "audit"
+  | "maintenance";
 type Range = "today" | "7d" | "30d" | "all";
-const SECTIONS: Section[] = ["overview", "users", "deposits", "withdrawals", "games", "audit", "maintenance"];
+const BASE_SECTIONS: Section[] = [
+  "overview", "users", "deposits", "withdrawals", "accounts", "games", "messages", "admins", "audit",
+];
 const GAMES = ["bingo", "dama", "aviator", "plinko", "lotto"];
+const BROADCAST_GAMES = ["", "lotto", "bingo", "dama", "aviator", "plinko"];
 const RETENTION_OPTIONS: RetentionOption[] = [
   "all", "games_only", "7d", "14d", "21d", "30d", "60d", "90d", "120d", "150d",
 ];
 const SEARCH_DEBOUNCE_MS = 350;
+
+const defaultCaps = (): Pick<
+  AdminMe,
+  "is_admin" | "is_super" | "can_maintenance" | "can_adjust_balance" | "can_manage_admins"
+> => ({
+  is_admin: true,
+  is_super: false,
+  can_maintenance: false,
+  can_adjust_balance: false,
+  can_manage_admins: false,
+});
 
 const fromDate = (range: Range): string | undefined => {
   if (range === "all") return "2020-01-01T00:00:00Z";
@@ -184,16 +211,84 @@ function Pager({
   );
 }
 
+function RangeStepper({
+  label,
+  value,
+  min,
+  max,
+  busy,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  busy: boolean;
+  onCommit: (next: number) => void;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => {
+    setDraft(value);
+  }, [value]);
+
+  const commit = (next: number) => {
+    const clamped = Math.max(min, Math.min(max, next));
+    setDraft(clamped);
+    if (clamped !== value) onCommit(clamped);
+  };
+
+  return (
+    <label className="block min-w-0 flex-1 text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+      {label}
+      <div className="mt-1 flex items-center gap-1.5">
+        <button
+          type="button"
+          disabled={busy || draft <= min}
+          onClick={() => commit(draft - 1)}
+          className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm disabled:opacity-40 dark:border-white/10"
+        >
+          −
+        </button>
+        <input
+          type="number"
+          min={min}
+          max={max}
+          value={draft}
+          disabled={busy}
+          onChange={(e) => {
+            const raw = Number.parseInt(e.target.value, 10);
+            if (Number.isNaN(raw)) return;
+            setDraft(Math.max(min, Math.min(max, raw)));
+          }}
+          onBlur={() => commit(draft)}
+          className="w-full rounded-xl border border-slate-200 bg-transparent p-2 text-center text-sm dark:border-white/10"
+        />
+        <button
+          type="button"
+          disabled={busy || draft >= max}
+          onClick={() => commit(draft + 1)}
+          className="rounded-lg border border-slate-200 px-2 py-1.5 text-sm disabled:opacity-40 dark:border-white/10"
+        >
+          +
+        </button>
+      </div>
+    </label>
+  );
+}
+
 function BingoBotControl({
   status,
   busy,
   onToggle,
+  onReserveRange,
 }: {
   status: BingoBotStatus | null;
   busy: boolean;
   onToggle: (enabled: boolean) => void;
+  onReserveRange: (min: number, max: number) => void;
 }) {
   const { t } = useI18n();
+
   if (!status) {
     return (
       <section className="flex items-center justify-center rounded-xl border border-slate-200/90 bg-white p-4 dark:border-white/10 dark:bg-[#141820]">
@@ -204,6 +299,8 @@ function BingoBotControl({
 
   const statusKey = `admin.bingoBotStatus.${status.status}` as const;
   const sourceKey = `admin.bingoBotSource.${status.source}` as const;
+  const allowedMin = status.allowed_min ?? 0;
+  const allowedMax = status.allowed_max ?? 50;
 
   return (
     <section className="rounded-xl border border-slate-200/90 bg-white p-3 dark:border-white/10 dark:bg-[#141820]">
@@ -242,6 +339,31 @@ function BingoBotControl({
           {t("admin.bingoBotInactive")}
         </button>
       </div>
+      <p className="mt-3 text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+        {t("admin.bingoBotReserveRange")}
+      </p>
+      <div className="mt-1 flex items-end gap-2">
+        <RangeStepper
+          label={t("admin.bingoBotReserveFrom")}
+          value={status.reserve_min}
+          min={allowedMin}
+          max={status.reserve_max}
+          busy={busy}
+          onCommit={(next) => onReserveRange(next, status.reserve_max)}
+        />
+        <span className="mb-2 text-xs text-slate-400">–</span>
+        <RangeStepper
+          label={t("admin.bingoBotReserveTo")}
+          value={status.reserve_max}
+          min={status.reserve_min}
+          max={allowedMax}
+          busy={busy}
+          onCommit={(next) => onReserveRange(status.reserve_min, next)}
+        />
+      </div>
+      <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+        {t("admin.bingoBotReserveHint", { min: allowedMin, max: allowedMax })}
+      </p>
       <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
         <span>{t(statusKey as any)}</span>
         <span>{t("admin.bingoBotBoards")}: {status.boards_held}</span>
@@ -251,8 +373,110 @@ function BingoBotControl({
   );
 }
 
+function LottoBotControl({
+  status,
+  busy,
+  onToggle,
+  onReserveRange,
+}: {
+  status: LottoBotStatus | null;
+  busy: boolean;
+  onToggle: (enabled: boolean) => void;
+  onReserveRange: (min: number, max: number) => void;
+}) {
+  const { t } = useI18n();
+
+  if (!status) {
+    return (
+      <section className="flex items-center justify-center rounded-xl border border-slate-200/90 bg-white p-4 dark:border-white/10 dark:bg-[#141820]">
+        <Loader2 className="animate-spin text-sky-600" size={18} aria-label="Loading" />
+      </section>
+    );
+  }
+
+  const statusKey = `admin.lottoBotStatus.${status.status}` as const;
+  const sourceKey = `admin.lottoBotSource.${status.source}` as const;
+  const allowedMin = status.allowed_min ?? 1;
+  const allowedMax = status.allowed_max ?? 25;
+
+  return (
+    <section className="rounded-xl border border-slate-200/90 bg-white p-3 dark:border-white/10 dark:bg-[#141820]">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="text-sm font-semibold">{t("admin.lottoBot")}</h2>
+          <p className="mt-1 text-[11px] leading-relaxed text-slate-500 dark:text-slate-400">
+            {t("admin.lottoBotHint")}
+          </p>
+        </div>
+        {busy && <Loader2 className="mt-0.5 shrink-0 animate-spin text-sky-600" size={16} aria-hidden />}
+      </div>
+      <div className="mt-3 flex gap-1 rounded-lg bg-slate-100 p-1 dark:bg-white/[0.06]">
+        <button
+          type="button"
+          disabled={busy || status.enabled}
+          onClick={() => onToggle(true)}
+          className={`flex-1 rounded-md px-3 py-2 text-xs font-semibold transition ${
+            status.enabled
+              ? "bg-emerald-600 text-white shadow-sm"
+              : "text-slate-600 hover:bg-white/70 dark:text-slate-300 dark:hover:bg-white/10"
+          } disabled:opacity-60`}
+        >
+          {t("admin.lottoBotActive")}
+        </button>
+        <button
+          type="button"
+          disabled={busy || !status.enabled}
+          onClick={() => onToggle(false)}
+          className={`flex-1 rounded-md px-3 py-2 text-xs font-semibold transition ${
+            !status.enabled
+              ? "bg-slate-700 text-white shadow-sm dark:bg-slate-600"
+              : "text-slate-600 hover:bg-white/70 dark:text-slate-300 dark:hover:bg-white/10"
+          } disabled:opacity-60`}
+        >
+          {t("admin.lottoBotInactive")}
+        </button>
+      </div>
+      <p className="mt-3 text-[11px] font-semibold text-slate-600 dark:text-slate-300">
+        {t("admin.lottoBotReserveRange")}
+      </p>
+      <div className="mt-1 flex items-end gap-2">
+        <RangeStepper
+          label={t("admin.lottoBotReserveFrom")}
+          value={status.reserve_min}
+          min={allowedMin}
+          max={status.reserve_max}
+          busy={busy}
+          onCommit={(next) => onReserveRange(next, status.reserve_max)}
+        />
+        <span className="mb-2 text-xs text-slate-400">–</span>
+        <RangeStepper
+          label={t("admin.lottoBotReserveTo")}
+          value={status.reserve_max}
+          min={status.reserve_min}
+          max={allowedMax}
+          busy={busy}
+          onCommit={(next) => onReserveRange(status.reserve_min, next)}
+        />
+      </div>
+      <p className="mt-1 text-[11px] text-slate-500 dark:text-slate-400">
+        {t("admin.lottoBotReserveHint", {
+          min: allowedMin,
+          max: allowedMax,
+          threshold: status.real_player_threshold ?? 15,
+        })}
+      </p>
+      <div className="mt-2 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
+        <span>{t(statusKey as any)}</span>
+        <span>{t("admin.lottoBotNumbers")}: {status.numbers_held}</span>
+        <span>{t(sourceKey as any)}</span>
+      </div>
+    </section>
+  );
+}
+
 export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void }) {
   const { t } = useI18n();
+  const [caps, setCaps] = useState(defaultCaps);
   const [section, setSection] = useState<Section>("overview");
   const [range, setRange] = useState<Range>("7d");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
@@ -286,16 +510,53 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
   const [playerOffset, setPlayerOffset] = useState(0);
   const [bingoBot, setBingoBotState] = useState<BingoBotStatus | null>(null);
   const [bingoBotBusy, setBingoBotBusy] = useState(false);
+  const [lottoBot, setLottoBotState] = useState<LottoBotStatus | null>(null);
+  const [lottoBotBusy, setLottoBotBusy] = useState(false);
   const [pendingAction, setPendingAction] = useState<string | null>(null);
   const [retentionOption, setRetentionOption] = useState<RetentionOption>("30d");
   const [retentionPreview, setRetentionPreview] = useState<RetentionPreview | null>(null);
   const [retentionConfirm, setRetentionConfirm] = useState("");
   const [retentionReason, setRetentionReason] = useState("");
   const [retentionMessage, setRetentionMessage] = useState("");
+  const [deleteQuery, setDeleteQuery] = useState("");
+  const [deleteConfirm, setDeleteConfirm] = useState("");
+  const [deleteReason, setDeleteReason] = useState("");
+  const [deleteForce, setDeleteForce] = useState(false);
+  const [deleteMessage, setDeleteMessage] = useState("");
+  const [deleteAllConfirm, setDeleteAllConfirm] = useState("");
+  const [deleteAllReason, setDeleteAllReason] = useState("");
+  const [deleteAllForce, setDeleteAllForce] = useState(false);
+  const [deleteAllMessage, setDeleteAllMessage] = useState("");
+  const [broadcastMessage, setBroadcastMessage] = useState("");
+  const [broadcastGame, setBroadcastGame] = useState("");
+  const [broadcastUrl, setBroadcastUrl] = useState("");
+  const [broadcastLabel, setBroadcastLabel] = useState("");
+  const [broadcastResult, setBroadcastResult] = useState<BroadcastResult | null>(null);
+  const [broadcastBusy, setBroadcastBusy] = useState(false);
+  const [admins, setAdmins] = useState<ManagedAdmin[]>([]);
+  const [newAdminUsername, setNewAdminUsername] = useState("");
+  const [adminsMessage, setAdminsMessage] = useState("");
+  const [paymentAccounts, setPaymentAccounts] = useState<PaymentAccount[]>([]);
+  const [accountKindFilter, setAccountKindFilter] = useState<PaymentAccountKind | "all">("deposit");
+  const [withdrawHouseAccounts, setWithdrawHouseAccounts] = useState<PaymentAccount[]>([]);
+  const [accountForm, setAccountForm] = useState({
+    bank: "",
+    account_name: "",
+    account_number: "",
+    kind: "deposit" as PaymentAccountKind,
+  });
+  const [editingAccount, setEditingAccount] = useState<PaymentAccount | null>(null);
+  const [accountsMessage, setAccountsMessage] = useState("");
   /** Bumps on every section enter so lists refetch on navigation (not only on filter change). */
   const [sectionVisit, setSectionVisit] = useState(0);
   const sectionLoadedRef = useRef<Partial<Record<Section, boolean>>>({});
   const tabRefs = useRef<Partial<Record<Section, HTMLButtonElement | null>>>({});
+
+  const sections = useMemo(() => {
+    const items = [...BASE_SECTIONS];
+    if (caps.can_maintenance) items.push("maintenance");
+    return items;
+  }, [caps.can_maintenance]);
 
   const fail = useEffectEvent((caught: unknown) => {
     if (axios.isAxiosError(caught) && (caught.response?.status === 401 || caught.response?.status === 403)) {
@@ -304,6 +565,32 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
     }
     setError(t("admin.error"));
   });
+
+  useEffect(() => {
+    let cancelled = false;
+    getAdminMe()
+      .then((me) => {
+        if (cancelled) return;
+        setCaps({
+          is_admin: me.is_admin,
+          is_super: me.is_super,
+          can_maintenance: me.can_maintenance,
+          can_adjust_balance: me.can_adjust_balance,
+          can_manage_admins: me.can_manage_admins,
+        });
+        if (!me.is_admin) onAccessDenied();
+      })
+      .catch((caught) => {
+        if (!cancelled) fail(caught);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    if (section === "maintenance" && !caps.can_maintenance) {
+      setSection("overview");
+    }
+  }, [section, caps.can_maintenance]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), SEARCH_DEBOUNCE_MS);
@@ -325,8 +612,14 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
         return `deposits|${depositStatus}|${paymentOffset}|${refresh}|${sectionVisit}`;
       case "withdrawals":
         return `withdrawals|${withdrawStatus}|${paymentOffset}|${refresh}|${sectionVisit}`;
+      case "accounts":
+        return `accounts|${accountKindFilter}|${refresh}|${sectionVisit}`;
       case "games":
         return `games|${game}|${range}|${playerOffset}|${refresh}|${sectionVisit}`;
+      case "messages":
+        return `messages|${refresh}|${sectionVisit}`;
+      case "admins":
+        return `admins|${refresh}|${sectionVisit}`;
       case "audit":
         return `audit|${auditOffset}|${refresh}|${sectionVisit}`;
       case "maintenance":
@@ -336,8 +629,8 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
     }
   }, [
     section, range, refresh, sectionVisit, debouncedSearch, userFilter, userOffset,
-    depositStatus, withdrawStatus, paymentOffset, game, playerOffset, auditOffset,
-    retentionOption,
+    depositStatus, withdrawStatus, paymentOffset, accountKindFilter, game, playerOffset,
+    auditOffset, retentionOption,
   ]);
 
   useEffect(() => {
@@ -354,9 +647,10 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
           const data = await getDashboard(from);
           if (cancelled) return;
           setDashboard(data);
-          const bot = await getBingoBot();
+          const [bingo, lotto] = await Promise.all([getBingoBot(), getLottoBot()]);
           if (cancelled) return;
-          setBingoBotState(bot);
+          setBingoBotState(bingo);
+          setLottoBotState(lotto);
         } else if (section === "users") {
           const data = await getUsers({
             search: debouncedSearch || undefined,
@@ -379,15 +673,25 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
           setPaymentTotal(data.total);
           setPaymentWorkflow(data.workflow || "");
         } else if (section === "withdrawals") {
-          const data = await getWithdrawals({
-            status: withdrawStatus,
-            limit: ADMIN_PAGE_SIZE,
-            offset: paymentOffset,
-          });
+          const [data, house] = await Promise.all([
+            getWithdrawals({
+              status: withdrawStatus,
+              limit: ADMIN_PAGE_SIZE,
+              offset: paymentOffset,
+            }),
+            listPaymentAccounts("withdraw"),
+          ]);
           if (cancelled) return;
           setPayments(data.items);
           setPaymentTotal(data.total);
           setPaymentWorkflow("");
+          setWithdrawHouseAccounts(house.items.filter((row) => row.is_enabled));
+        } else if (section === "accounts") {
+          const data = await listPaymentAccounts(
+            accountKindFilter === "all" ? undefined : accountKindFilter,
+          );
+          if (cancelled) return;
+          setPaymentAccounts(data.items);
         } else if (section === "games") {
           const data = await getGamePlayers(game, {
             from,
@@ -401,13 +705,24 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
             const bot = await getBingoBot();
             if (cancelled) return;
             setBingoBotState(bot);
+          } else if (game === "lotto") {
+            const bot = await getLottoBot();
+            if (cancelled) return;
+            setLottoBotState(bot);
           }
+        } else if (section === "messages") {
+          // Composer is client-side only; no list fetch.
+        } else if (section === "admins") {
+          const data = await listAdmins();
+          if (cancelled) return;
+          setAdmins(data.items);
         } else if (section === "audit") {
           const data = await getAudit({ limit: ADMIN_PAGE_SIZE, offset: auditOffset });
           if (cancelled) return;
           setAudit(data.items);
           setAuditTotal(data.total);
         } else if (section === "maintenance") {
+          if (!caps.can_maintenance) return;
           setRetentionMessage("");
           const data = await previewDataRetention(retentionOption);
           if (cancelled) return;
@@ -466,13 +781,78 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
   };
 
   const submitAdjustment = async () => {
-    if (!adjusting || !amount || reason.trim().length < 3) return;
+    if (!caps.can_adjust_balance || !adjusting || !amount || reason.trim().length < 3) return;
     setPendingAction(adjusting.id);
     try {
       await adjustBalance(adjusting.id, amount, reason.trim(), crypto.randomUUID());
       setAdjusting(null); setAmount(""); setReason(""); setRefresh((value) => value + 1);
     } catch (caught) { fail(caught); }
     finally { setPendingAction(null); }
+  };
+
+  const submitBroadcast = async () => {
+    if (!broadcastMessage.trim() || broadcastBusy) return;
+    if (!window.confirm(t("admin.broadcastConfirm"))) return;
+    setBroadcastBusy(true);
+    setBroadcastResult(null);
+    try {
+      const result = await sendAdminBroadcast({
+        message: broadcastMessage.trim(),
+        buttonUrl: broadcastUrl.trim() || undefined,
+        buttonLabel: broadcastLabel.trim() || undefined,
+        game: broadcastGame || undefined,
+        requestId: crypto.randomUUID(),
+      });
+      setBroadcastResult(result);
+    } catch (caught) {
+      if (axios.isAxiosError(caught) && (caught.response?.status === 401 || caught.response?.status === 403)) {
+        onAccessDenied();
+        return;
+      }
+      setError(t("admin.broadcastError"));
+    } finally {
+      setBroadcastBusy(false);
+    }
+  };
+
+  const submitAddAdmin = async () => {
+    if (!caps.can_manage_admins || !newAdminUsername.trim()) return;
+    setPendingAction("add-admin");
+    setAdminsMessage("");
+    try {
+      await addAdmin(newAdminUsername.trim(), crypto.randomUUID());
+      setNewAdminUsername("");
+      setAdminsMessage(t("admin.adminsAddSuccess"));
+      setRefresh((value) => value + 1);
+    } catch (caught) {
+      if (axios.isAxiosError(caught) && (caught.response?.status === 401 || caught.response?.status === 403)) {
+        onAccessDenied();
+        return;
+      }
+      setAdminsMessage(t("admin.adminsAddError"));
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const submitRemoveAdmin = async (username: string) => {
+    if (!caps.can_manage_admins) return;
+    if (!window.confirm(t("admin.adminsRemoveConfirm", { username }))) return;
+    setPendingAction(`remove-${username}`);
+    setAdminsMessage("");
+    try {
+      await removeAdmin(username, crypto.randomUUID());
+      setAdminsMessage(t("admin.adminsRemoveSuccess", { username }));
+      setRefresh((value) => value + 1);
+    } catch (caught) {
+      if (axios.isAxiosError(caught) && (caught.response?.status === 401 || caught.response?.status === 403)) {
+        onAccessDenied();
+        return;
+      }
+      setAdminsMessage(t("admin.adminsRemoveError"));
+    } finally {
+      setPendingAction(null);
+    }
   };
 
   const toggleBingoBot = async (enabled: boolean) => {
@@ -483,7 +863,7 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
       current ? { ...current, enabled, status: enabled ? "active" : "inactive" } : current
     );
     try {
-      const next = await setBingoBot(enabled, crypto.randomUUID());
+      const next = await setBingoBot({ enabled }, crypto.randomUUID());
       setBingoBotState(next);
     } catch (caught) {
       setBingoBotState(previous);
@@ -497,13 +877,179 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
     }
   };
 
+  const updateBingoBotReserve = async (reserveMin: number, reserveMax: number) => {
+    if (
+      bingoBotBusy
+      || (bingoBot
+        && bingoBot.reserve_min === reserveMin
+        && bingoBot.reserve_max === reserveMax)
+    ) return;
+    const previous = bingoBot;
+    setBingoBotBusy(true);
+    setBingoBotState((current) =>
+      current ? { ...current, reserve_min: reserveMin, reserve_max: reserveMax } : current
+    );
+    try {
+      const next = await setBingoBot(
+        { reserve_min: reserveMin, reserve_max: reserveMax },
+        crypto.randomUUID(),
+      );
+      setBingoBotState(next);
+    } catch (caught) {
+      setBingoBotState(previous);
+      if (axios.isAxiosError(caught) && (caught.response?.status === 401 || caught.response?.status === 403)) {
+        onAccessDenied();
+        return;
+      }
+      setError(t("admin.bingoBotToggleError"));
+    } finally {
+      setBingoBotBusy(false);
+    }
+  };
+
+  const toggleLottoBot = async (enabled: boolean) => {
+    if (lottoBotBusy || (lottoBot && lottoBot.enabled === enabled)) return;
+    const previous = lottoBot;
+    setLottoBotBusy(true);
+    setLottoBotState((current) =>
+      current ? { ...current, enabled, status: enabled ? "active" : "inactive" } : current
+    );
+    try {
+      const next = await setLottoBot({ enabled }, crypto.randomUUID());
+      setLottoBotState(next);
+    } catch (caught) {
+      setLottoBotState(previous);
+      if (axios.isAxiosError(caught) && (caught.response?.status === 401 || caught.response?.status === 403)) {
+        onAccessDenied();
+        return;
+      }
+      setError(t("admin.lottoBotToggleError"));
+    } finally {
+      setLottoBotBusy(false);
+    }
+  };
+
+  const updateLottoBotReserve = async (reserveMin: number, reserveMax: number) => {
+    if (
+      lottoBotBusy
+      || (lottoBot
+        && lottoBot.reserve_min === reserveMin
+        && lottoBot.reserve_max === reserveMax)
+    ) return;
+    const previous = lottoBot;
+    setLottoBotBusy(true);
+    setLottoBotState((current) =>
+      current ? { ...current, reserve_min: reserveMin, reserve_max: reserveMax } : current
+    );
+    try {
+      const next = await setLottoBot(
+        { reserve_min: reserveMin, reserve_max: reserveMax },
+        crypto.randomUUID(),
+      );
+      setLottoBotState(next);
+    } catch (caught) {
+      setLottoBotState(previous);
+      if (axios.isAxiosError(caught) && (caught.response?.status === 401 || caught.response?.status === 403)) {
+        onAccessDenied();
+        return;
+      }
+      setError(t("admin.lottoBotToggleError"));
+    } finally {
+      setLottoBotBusy(false);
+    }
+  };
+
   const reviewWithdrawal = async (item: Payment, action: "approve" | "reject") => {
     const note = action === "reject" ? window.prompt(t("admin.rejectReason")) : null;
     if (action === "reject" && !note?.trim()) return;
+    let paidFromAccountId: string | null = null;
+    if (action === "approve" && withdrawHouseAccounts.length > 0) {
+      const lines = withdrawHouseAccounts.map(
+        (row, index) => `${index + 1}. ${row.bank} · ${row.account_name} · ${row.account_number}`,
+      );
+      const pick = window.prompt(
+        `${t("admin.payoutAccountPrompt")}\n\n${lines.join("\n")}\n\n${t("admin.payoutAccountSkip")}`,
+      );
+      if (pick != null && pick.trim()) {
+        const index = Number(pick.trim()) - 1;
+        if (Number.isInteger(index) && index >= 0 && index < withdrawHouseAccounts.length) {
+          paidFromAccountId = withdrawHouseAccounts[index].id;
+        }
+      }
+    }
     if (!window.confirm(t(action === "approve" ? "admin.approveConfirm" : "admin.rejectConfirm"))) return;
     setPendingAction(item.id);
     try {
-      await decideWithdrawal(item.id, action, note?.trim() || null, crypto.randomUUID());
+      await decideWithdrawal(
+        item.id,
+        action,
+        note?.trim() || null,
+        crypto.randomUUID(),
+        paidFromAccountId,
+      );
+      setRefresh((value) => value + 1);
+    } catch (caught) { fail(caught); }
+    finally { setPendingAction(null); }
+  };
+
+  const submitAccountForm = async () => {
+    if (pendingAction === "account-save") return;
+    const bank = (editingAccount ? (editingAccount.bank) : accountForm.bank).trim();
+    const accountName = (editingAccount ? editingAccount.account_name : accountForm.account_name).trim();
+    const accountNumber = (editingAccount ? editingAccount.account_number : accountForm.account_number).trim();
+    if (!bank || !accountName || !accountNumber) return;
+    setPendingAction("account-save");
+    setAccountsMessage("");
+    try {
+      if (editingAccount) {
+        await updatePaymentAccount(editingAccount.id, {
+          bank,
+          account_name: accountName,
+          account_number: accountNumber,
+          requestId: crypto.randomUUID(),
+        });
+        setAccountsMessage(t("admin.accountsUpdated"));
+        setEditingAccount(null);
+      } else {
+        await createPaymentAccount({
+          kind: accountForm.kind,
+          bank,
+          account_name: accountName,
+          account_number: accountNumber,
+          requestId: crypto.randomUUID(),
+        });
+        setAccountsMessage(t("admin.accountsCreated"));
+        setAccountForm({ bank: "", account_name: "", account_number: "", kind: accountForm.kind });
+      }
+      setRefresh((value) => value + 1);
+    } catch (caught) {
+      fail(caught);
+      setAccountsMessage(t("admin.accountsError"));
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const toggleAccountEnabled = async (row: PaymentAccount) => {
+    if (pendingAction === `toggle-${row.id}`) return;
+    setPendingAction(`toggle-${row.id}`);
+    try {
+      await updatePaymentAccount(row.id, {
+        is_enabled: !row.is_enabled,
+        requestId: crypto.randomUUID(),
+      });
+      setRefresh((value) => value + 1);
+    } catch (caught) { fail(caught); }
+    finally { setPendingAction(null); }
+  };
+
+  const removeAccount = async (row: PaymentAccount) => {
+    if (!window.confirm(t("admin.accountsDeleteConfirm", { bank: row.bank }))) return;
+    if (pendingAction === `delete-${row.id}`) return;
+    setPendingAction(`delete-${row.id}`);
+    try {
+      await deletePaymentAccount(row.id, crypto.randomUUID());
+      setAccountsMessage(t("admin.accountsDeleted"));
       setRefresh((value) => value + 1);
     } catch (caught) { fail(caught); }
     finally { setPendingAction(null); }
@@ -536,6 +1082,77 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
         return;
       }
       setRetentionMessage(t("admin.retentionError"));
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const submitDeleteUser = async () => {
+    if (pendingAction === "delete-user") return;
+    if (deleteConfirm.trim() !== "DELETE_USERS" || deleteReason.trim().length < 3 || !deleteQuery.trim()) {
+      return;
+    }
+    setPendingAction("delete-user");
+    setDeleteMessage("");
+    try {
+      const result = await deleteAdminUser({
+        query: deleteQuery.trim(),
+        confirmation: deleteConfirm.trim(),
+        reason: deleteReason.trim(),
+        requestId: crypto.randomUUID(),
+        force: deleteForce,
+      });
+      const username = (result.deleted_user as { username?: string } | undefined)?.username;
+      setDeleteMessage(
+        t("admin.deleteUserSuccess", { user: username || deleteQuery.trim() }),
+      );
+      setDeleteQuery("");
+      setDeleteConfirm("");
+      setDeleteReason("");
+      setDeleteForce(false);
+    } catch (caught) {
+      if (axios.isAxiosError(caught) && (caught.response?.status === 401 || caught.response?.status === 403)) {
+        onAccessDenied();
+        return;
+      }
+      const detail = axios.isAxiosError(caught)
+        ? String(caught.response?.data?.detail ?? "")
+        : "";
+      setDeleteMessage(detail || t("admin.deleteUserError"));
+    } finally {
+      setPendingAction(null);
+    }
+  };
+
+  const submitDeleteAllUsers = async () => {
+    if (pendingAction === "delete-all-users") return;
+    if (deleteAllConfirm.trim() !== "DELETE_ALL_USERS" || deleteAllReason.trim().length < 3) {
+      return;
+    }
+    setPendingAction("delete-all-users");
+    setDeleteAllMessage("");
+    try {
+      const result = await deleteAllAdminUsers({
+        confirmation: deleteAllConfirm.trim(),
+        reason: deleteAllReason.trim(),
+        requestId: crypto.randomUUID(),
+        force: deleteAllForce,
+      });
+      setDeleteAllMessage(
+        t("admin.deleteAllUsersSuccess", {
+          count: result.deleted_count ?? 0,
+          skipped: result.skipped?.length ?? 0,
+        }),
+      );
+      setDeleteAllConfirm("");
+      setDeleteAllReason("");
+      setDeleteAllForce(false);
+    } catch (caught) {
+      if (axios.isAxiosError(caught) && (caught.response?.status === 401 || caught.response?.status === 403)) {
+        onAccessDenied();
+        return;
+      }
+      setDeleteAllMessage(t("admin.deleteAllUsersError"));
     } finally {
       setPendingAction(null);
     }
@@ -574,7 +1191,7 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
           className="mt-2 flex gap-1 overflow-x-auto pb-0.5 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
           aria-label={t("admin.title")}
         >
-          {SECTIONS.map((item) => (
+          {sections.map((item) => (
             <button
               key={item}
               ref={(node) => { tabRefs.current[item] = node; }}
@@ -700,6 +1317,13 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
                   status={bingoBot}
                   busy={bingoBotBusy}
                   onToggle={toggleBingoBot}
+                  onReserveRange={updateBingoBotReserve}
+                />
+                <LottoBotControl
+                  status={lottoBot}
+                  busy={lottoBotBusy}
+                  onToggle={toggleLottoBot}
+                  onReserveRange={updateLottoBotReserve}
                 />
               </>
             )}
@@ -755,13 +1379,15 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
                       </div>
                       <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
                         <span className="text-[11px] text-slate-500">{shortTime(user.joined_at)}</span>
-                        <button
-                          type="button"
-                          onClick={() => setAdjusting(user)}
-                          className="rounded-lg bg-slate-800 px-3 py-1.5 text-[11px] font-semibold text-white dark:bg-sky-600"
-                        >
-                          {t("admin.adjustBalance")}
-                        </button>
+                        {caps.can_adjust_balance && (
+                          <button
+                            type="button"
+                            onClick={() => setAdjusting(user)}
+                            className="rounded-lg bg-slate-800 px-3 py-1.5 text-[11px] font-semibold text-white dark:bg-sky-600"
+                          >
+                            {t("admin.adjustBalance")}
+                          </button>
+                        )}
                       </div>
                     </article>
                   )) : <Empty text={t("admin.empty")} onRetry={() => setRefresh((v) => v + 1)} retryLabel={t("common.refresh")} />}
@@ -859,6 +1485,23 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
 
             {section === "withdrawals" && (
               <>
+                {withdrawHouseAccounts.length > 0 && (
+                  <div className="rounded-xl border border-slate-200/90 bg-white p-3 text-xs dark:border-white/10 dark:bg-[#141820]">
+                    <p className="font-semibold text-slate-700 dark:text-slate-200">
+                      {t("admin.housePayoutAccounts")}
+                    </p>
+                    <p className="mt-1 text-slate-500 dark:text-slate-400">
+                      {t("admin.housePayoutAccountsHint")}
+                    </p>
+                    <ul className="mt-2 space-y-1 text-slate-600 dark:text-slate-300">
+                      {withdrawHouseAccounts.map((row) => (
+                        <li key={row.id}>
+                          {row.bank} · {row.account_name} · {row.account_number}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <div className="flex flex-wrap gap-1">
                   {["pending", "approved", "rejected", "all"].map((item) => (
                     <button
@@ -932,6 +1575,183 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
               </>
             )}
 
+            {section === "accounts" && (
+              <section className="space-y-3 rounded-xl border border-slate-200/90 bg-white p-3 dark:border-white/10 dark:bg-[#141820]">
+                <div>
+                  <h2 className="text-sm font-semibold">{t("admin.accounts")}</h2>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                    {t("admin.accountsHint")}
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {(["deposit", "withdraw", "all"] as const).map((item) => (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => setAccountKindFilter(item)}
+                      className={`rounded-lg px-3 py-1.5 text-[11px] font-semibold ${
+                        accountKindFilter === item
+                          ? "bg-slate-800 text-white dark:bg-sky-600"
+                          : "bg-slate-100 dark:bg-white/[0.06]"
+                      }`}
+                    >
+                      {t(`admin.accountsKind.${item}` as any)}
+                    </button>
+                  ))}
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {!editingAccount && (
+                    <label className="block text-xs font-semibold sm:col-span-2">
+                      {t("admin.accountsKindLabel")}
+                      <select
+                        value={accountForm.kind}
+                        onChange={(e) =>
+                          setAccountForm((current) => ({
+                            ...current,
+                            kind: e.target.value as PaymentAccountKind,
+                          }))
+                        }
+                        className="mt-1 w-full rounded-xl border border-slate-200 bg-transparent p-3 text-sm dark:border-white/10"
+                      >
+                        <option value="deposit">{t("admin.accountsKind.deposit")}</option>
+                        <option value="withdraw">{t("admin.accountsKind.withdraw")}</option>
+                      </select>
+                    </label>
+                  )}
+                  <label className="block text-xs font-semibold">
+                    {t("admin.accountsBank")}
+                    <input
+                      value={editingAccount ? editingAccount.bank : accountForm.bank}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        if (editingAccount) {
+                          setEditingAccount({ ...editingAccount, bank: value });
+                        } else {
+                          setAccountForm((current) => ({ ...current, bank: value }));
+                        }
+                      }}
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-transparent p-3 text-sm dark:border-white/10"
+                    />
+                  </label>
+                  <label className="block text-xs font-semibold">
+                    {t("admin.accountsName")}
+                    <input
+                      value={editingAccount ? editingAccount.account_name : accountForm.account_name}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        if (editingAccount) {
+                          setEditingAccount({ ...editingAccount, account_name: value });
+                        } else {
+                          setAccountForm((current) => ({ ...current, account_name: value }));
+                        }
+                      }}
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-transparent p-3 text-sm dark:border-white/10"
+                    />
+                  </label>
+                  <label className="block text-xs font-semibold sm:col-span-2">
+                    {t("admin.accountsNumber")}
+                    <input
+                      value={editingAccount ? editingAccount.account_number : accountForm.account_number}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        if (editingAccount) {
+                          setEditingAccount({ ...editingAccount, account_number: value });
+                        } else {
+                          setAccountForm((current) => ({ ...current, account_number: value }));
+                        }
+                      }}
+                      className="mt-1 w-full rounded-xl border border-slate-200 bg-transparent p-3 text-sm dark:border-white/10"
+                    />
+                  </label>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={pendingAction === "account-save"}
+                    onClick={() => void submitAccountForm()}
+                    className="rounded-xl bg-slate-800 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50 dark:bg-sky-600"
+                  >
+                    {editingAccount ? t("admin.accountsSave") : t("admin.accountsAdd")}
+                  </button>
+                  {editingAccount && (
+                    <button
+                      type="button"
+                      onClick={() => setEditingAccount(null)}
+                      className="rounded-xl border border-slate-200 px-4 py-2.5 text-sm font-semibold dark:border-white/10"
+                    >
+                      {t("admin.accountsCancelEdit")}
+                    </button>
+                  )}
+                </div>
+                {accountsMessage && (
+                  <p className="text-xs text-slate-600 dark:text-slate-300">{accountsMessage}</p>
+                )}
+                <div className="space-y-2">
+                  {paymentAccounts.length ? paymentAccounts.map((row) => (
+                    <article
+                      key={row.id}
+                      className={`rounded-xl border p-3 ${
+                        row.is_enabled
+                          ? "border-emerald-200/80 bg-emerald-50/40 dark:border-emerald-500/25 dark:bg-emerald-500/5"
+                          : "border-slate-200/80 bg-slate-50 opacity-80 dark:border-white/10 dark:bg-white/[0.04]"
+                      }`}
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">
+                            {row.bank}
+                            <span className="ml-2 rounded bg-slate-200 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-slate-700 dark:bg-white/10 dark:text-slate-200">
+                              {t(`admin.accountsKind.${row.kind}` as any)}
+                            </span>
+                            <span
+                              className={`ml-2 rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${
+                                row.is_enabled
+                                  ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200"
+                                  : "bg-slate-200 text-slate-600 dark:bg-white/10 dark:text-slate-300"
+                              }`}
+                            >
+                              {row.is_enabled ? t("admin.accountsEnabled") : t("admin.accountsDisabled")}
+                            </span>
+                          </p>
+                          <p className="mt-1 truncate text-[11px] text-slate-500">
+                            {row.account_name} · {row.account_number}
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            disabled={pendingAction === `toggle-${row.id}`}
+                            onClick={() => void toggleAccountEnabled(row)}
+                            className="rounded-lg border border-slate-200 px-3 py-1.5 text-[11px] font-semibold disabled:opacity-50 dark:border-white/10"
+                          >
+                            {row.is_enabled ? t("admin.accountsDisable") : t("admin.accountsEnable")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingAccount(row);
+                              setAccountsMessage("");
+                            }}
+                            className="rounded-lg border border-slate-200 px-3 py-1.5 text-[11px] font-semibold dark:border-white/10"
+                          >
+                            {t("admin.accountsEdit")}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={pendingAction === `delete-${row.id}`}
+                            onClick={() => void removeAccount(row)}
+                            className="rounded-lg border border-rose-200 px-3 py-1.5 text-[11px] font-semibold text-rose-700 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-300"
+                          >
+                            {t("admin.accountsDelete")}
+                          </button>
+                        </div>
+                      </div>
+                    </article>
+                  )) : <Empty text={t("admin.accountsEmpty")} />}
+                </div>
+              </section>
+            )}
+
             {section === "games" && (
               <>
                 <div className="flex gap-1 overflow-x-auto [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
@@ -953,6 +1773,15 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
                     status={bingoBot}
                     busy={bingoBotBusy}
                     onToggle={toggleBingoBot}
+                    onReserveRange={updateBingoBotReserve}
+                  />
+                )}
+                {game === "lotto" && (
+                  <LottoBotControl
+                    status={lottoBot}
+                    busy={lottoBotBusy}
+                    onToggle={toggleLottoBot}
+                    onReserveRange={updateLottoBotReserve}
                   />
                 )}
                 <div className="space-y-2">
@@ -987,6 +1816,158 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
               </>
             )}
 
+            {section === "messages" && (
+              <section className="space-y-3 rounded-xl border border-slate-200/90 bg-white p-3 dark:border-white/10 dark:bg-[#141820]">
+                <div>
+                  <h2 className="text-sm font-semibold">{t("admin.messages")}</h2>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                    {t("admin.broadcastHint")}
+                  </p>
+                </div>
+                <label className="block text-xs font-semibold">
+                  {t("admin.broadcastMessage")}
+                  <textarea
+                    value={broadcastMessage}
+                    onChange={(e) => setBroadcastMessage(e.target.value)}
+                    rows={4}
+                    maxLength={4000}
+                    placeholder={t("admin.broadcastMessagePlaceholder")}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-transparent p-3 text-sm dark:border-white/10"
+                  />
+                </label>
+                <label className="block text-xs font-semibold">
+                  {t("admin.broadcastGame")}
+                  <select
+                    value={broadcastGame}
+                    onChange={(e) => setBroadcastGame(e.target.value)}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-transparent p-3 text-sm dark:border-white/10"
+                  >
+                    {BROADCAST_GAMES.map((item) => (
+                      <option key={item || "none"} value={item}>
+                        {item
+                          ? t(`admin.game.${item}` as any)
+                          : t("admin.broadcastGameNone")}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block text-xs font-semibold">
+                  {t("admin.broadcastUrl")}
+                  <input
+                    value={broadcastUrl}
+                    onChange={(e) => setBroadcastUrl(e.target.value)}
+                    disabled={!!broadcastGame}
+                    placeholder="https://…"
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-transparent p-3 text-sm disabled:opacity-50 dark:border-white/10"
+                  />
+                </label>
+                <label className="block text-xs font-semibold">
+                  {t("admin.broadcastLabel")}
+                  <input
+                    value={broadcastLabel}
+                    onChange={(e) => setBroadcastLabel(e.target.value)}
+                    placeholder={t("admin.broadcastLabelPlaceholder")}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-transparent p-3 text-sm dark:border-white/10"
+                  />
+                </label>
+                {broadcastResult && (
+                  <div className="rounded-lg bg-slate-100 p-3 text-xs dark:bg-white/[0.06]">
+                    <p className="font-semibold">{t("admin.broadcastResult")}</p>
+                    <p className="mt-1">
+                      {t("admin.broadcastCounts", {
+                        intended: broadcastResult.intended,
+                        succeeded: broadcastResult.succeeded,
+                        failed: broadcastResult.failed,
+                      })}
+                    </p>
+                    {broadcastResult.errors?.length > 0 && (
+                      <ul className="mt-2 max-h-32 space-y-0.5 overflow-y-auto text-[11px] text-rose-700 dark:text-rose-300">
+                        {broadcastResult.errors.map((item) => (
+                          <li key={`${item.telegram_id}-${item.error}`}>
+                            {item.telegram_id}: {item.error}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                )}
+                <button
+                  type="button"
+                  disabled={broadcastBusy || !broadcastMessage.trim()}
+                  onClick={() => void submitBroadcast()}
+                  className="w-full rounded-xl bg-slate-800 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50 dark:bg-sky-600"
+                >
+                  {broadcastBusy ? t("common.loading") : t("admin.broadcastSend")}
+                </button>
+              </section>
+            )}
+
+            {section === "admins" && (
+              <section className="space-y-3 rounded-xl border border-slate-200/90 bg-white p-3 dark:border-white/10 dark:bg-[#141820]">
+                <div>
+                  <h2 className="text-sm font-semibold">{t("admin.admins")}</h2>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                    {t("admin.adminsHint")}
+                  </p>
+                </div>
+                {caps.can_manage_admins && (
+                  <div className="flex flex-col gap-2 sm:flex-row">
+                    <input
+                      value={newAdminUsername}
+                      onChange={(e) => setNewAdminUsername(e.target.value)}
+                      placeholder={t("admin.adminsUsernamePlaceholder")}
+                      className="min-w-0 flex-1 rounded-xl border border-slate-200 bg-transparent p-3 text-sm dark:border-white/10"
+                    />
+                    <button
+                      type="button"
+                      disabled={pendingAction === "add-admin" || !newAdminUsername.trim()}
+                      onClick={() => void submitAddAdmin()}
+                      className="rounded-xl bg-slate-800 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-50 dark:bg-sky-600"
+                    >
+                      {t("admin.adminsAdd")}
+                    </button>
+                  </div>
+                )}
+                {adminsMessage && (
+                  <p className="text-xs text-slate-600 dark:text-slate-300">{adminsMessage}</p>
+                )}
+                <div className="space-y-2">
+                  {admins.length ? admins.map((row) => (
+                    <article
+                      key={row.username}
+                      className="flex items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-slate-50 px-3 py-2 dark:border-white/10 dark:bg-white/[0.04]"
+                    >
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-semibold">
+                          @{row.username}
+                          {row.is_super ? (
+                            <span className="ml-2 rounded bg-sky-100 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-800 dark:bg-sky-500/20 dark:text-sky-200">
+                              {t("admin.adminsSuper")}
+                            </span>
+                          ) : null}
+                        </p>
+                        <p className="truncate text-[11px] text-slate-500">
+                          {row.created_by
+                            ? t("admin.adminsCreatedBy", { username: row.created_by })
+                            : t("admin.adminsBuiltIn")}
+                        </p>
+                      </div>
+                      {caps.can_manage_admins && row.managed && !row.is_super && (
+                        <button
+                          type="button"
+                          disabled={pendingAction === `remove-${row.username}`}
+                          onClick={() => void submitRemoveAdmin(row.username)}
+                          className="shrink-0 rounded-lg border border-rose-200 px-3 py-1.5 text-[11px] font-semibold text-rose-700 disabled:opacity-50 dark:border-rose-500/30 dark:text-rose-300"
+                        >
+                          {t("admin.adminsRemove")}
+                        </button>
+                      )}
+                    </article>
+                  )) : <Empty text={t("admin.empty")} />}
+                </div>
+              </section>
+            )}
+
             {section === "audit" && (
               <>
                 <div className="space-y-2">
@@ -1012,7 +1993,8 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
               </>
             )}
 
-            {section === "maintenance" && (
+            {section === "maintenance" && caps.can_maintenance && (
+              <div className="space-y-4">
               <section className="space-y-3 rounded-xl border border-rose-200/80 bg-white p-3 dark:border-rose-500/25 dark:bg-[#141820]">
                 <div>
                   <h2 className="text-sm font-semibold text-rose-800 dark:text-rose-200">
@@ -1117,12 +2099,130 @@ export function AdminDashboard({ onAccessDenied }: { onAccessDenied: () => void 
                   {pendingAction === "purge" ? t("common.loading") : t("admin.retentionPurge")}
                 </button>
               </section>
+
+              <section className="space-y-3 rounded-xl border border-amber-200/80 bg-white p-3 dark:border-amber-500/25 dark:bg-[#141820]">
+                <div>
+                  <h2 className="text-sm font-semibold text-amber-900 dark:text-amber-200">
+                    {t("admin.deleteUsersTitle")}
+                  </h2>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                    {t("admin.deleteUsersHint")}
+                  </p>
+                </div>
+                <label className="block text-xs font-semibold">
+                  {t("admin.deleteUserQuery")}
+                  <input
+                    value={deleteQuery}
+                    onChange={(e) => setDeleteQuery(e.target.value)}
+                    placeholder={t("admin.deleteUserQueryPlaceholder")}
+                    autoComplete="off"
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-transparent p-3 text-sm dark:border-white/10"
+                  />
+                </label>
+                <label className="block text-xs font-semibold">
+                  {t("admin.retentionConfirmLabel", { word: "DELETE_USERS" })}
+                  <input
+                    value={deleteConfirm}
+                    onChange={(e) => setDeleteConfirm(e.target.value)}
+                    autoComplete="off"
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-transparent p-3 text-sm dark:border-white/10"
+                  />
+                </label>
+                <label className="block text-xs font-semibold">
+                  {t("admin.reason")}
+                  <textarea
+                    value={deleteReason}
+                    onChange={(e) => setDeleteReason(e.target.value)}
+                    rows={2}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-transparent p-3 text-sm dark:border-white/10"
+                  />
+                </label>
+                <label className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={deleteForce}
+                    onChange={(e) => setDeleteForce(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>{t("admin.deleteUserForce")}</span>
+                </label>
+                {deleteMessage && (
+                  <p className="text-xs text-slate-600 dark:text-slate-300">{deleteMessage}</p>
+                )}
+                <button
+                  type="button"
+                  disabled={
+                    pendingAction === "delete-user"
+                    || deleteConfirm.trim() !== "DELETE_USERS"
+                    || deleteReason.trim().length < 3
+                    || !deleteQuery.trim()
+                  }
+                  onClick={submitDeleteUser}
+                  className="w-full rounded-xl bg-amber-700 py-3 font-semibold text-white disabled:opacity-40 dark:bg-amber-600"
+                >
+                  {pendingAction === "delete-user" ? t("common.loading") : t("admin.deleteUserSubmit")}
+                </button>
+              </section>
+
+              <section className="space-y-3 rounded-xl border border-rose-300/90 bg-white p-3 dark:border-rose-500/40 dark:bg-[#141820]">
+                <div>
+                  <h2 className="text-sm font-semibold text-rose-900 dark:text-rose-200">
+                    {t("admin.deleteAllUsersTitle")}
+                  </h2>
+                  <p className="mt-1 text-xs leading-relaxed text-slate-600 dark:text-slate-400">
+                    {t("admin.deleteAllUsersHint")}
+                  </p>
+                </div>
+                <label className="block text-xs font-semibold">
+                  {t("admin.retentionConfirmLabel", { word: "DELETE_ALL_USERS" })}
+                  <input
+                    value={deleteAllConfirm}
+                    onChange={(e) => setDeleteAllConfirm(e.target.value)}
+                    autoComplete="off"
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-transparent p-3 text-sm dark:border-white/10"
+                  />
+                </label>
+                <label className="block text-xs font-semibold">
+                  {t("admin.reason")}
+                  <textarea
+                    value={deleteAllReason}
+                    onChange={(e) => setDeleteAllReason(e.target.value)}
+                    rows={2}
+                    className="mt-1 w-full rounded-xl border border-slate-200 bg-transparent p-3 text-sm dark:border-white/10"
+                  />
+                </label>
+                <label className="flex items-start gap-2 text-xs text-slate-600 dark:text-slate-300">
+                  <input
+                    type="checkbox"
+                    checked={deleteAllForce}
+                    onChange={(e) => setDeleteAllForce(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>{t("admin.deleteUserForce")}</span>
+                </label>
+                {deleteAllMessage && (
+                  <p className="text-xs text-slate-600 dark:text-slate-300">{deleteAllMessage}</p>
+                )}
+                <button
+                  type="button"
+                  disabled={
+                    pendingAction === "delete-all-users"
+                    || deleteAllConfirm.trim() !== "DELETE_ALL_USERS"
+                    || deleteAllReason.trim().length < 3
+                  }
+                  onClick={submitDeleteAllUsers}
+                  className="w-full rounded-xl bg-rose-900 py-3 font-semibold text-white disabled:opacity-40"
+                >
+                  {pendingAction === "delete-all-users" ? t("common.loading") : t("admin.deleteAllUsersSubmit")}
+                </button>
+              </section>
+              </div>
             )}
           </div>
         )}
       </main>
 
-      {adjusting && (
+      {adjusting && caps.can_adjust_balance && (
         <div role="dialog" aria-modal="true" className="fixed inset-0 z-50 flex items-end justify-center bg-black/50 p-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] sm:items-center">
           <div className="max-h-[min(85dvh,32rem)] w-full max-w-md overflow-y-auto rounded-2xl bg-white p-4 shadow-2xl dark:bg-[#151a22]">
             <div className="flex justify-between gap-2">

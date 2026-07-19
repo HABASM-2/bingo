@@ -25,13 +25,10 @@ from app.bot.handlers import (
     confirm_transfer,
     confirm_withdraw,
     dama_command,
-    deposit_boa,
-    deposit_cbe,
-    deposit_cbebirr,
+    deposit_account_handler,
     deposit_command,
     deposit_menu,
     deposit_paid,
-    deposit_telebirr,
     games_command,
     games_menu,
     help_handler,
@@ -130,10 +127,9 @@ def create_bot(proxy: str | None = None):
     application.add_handler(CallbackQueryHandler(register_command, pattern="^register$"))
     application.add_handler(CallbackQueryHandler(deposit_paid, pattern="^deposit_paid$"))
     application.add_handler(CallbackQueryHandler(deposit_menu, pattern="^deposit$"))
-    application.add_handler(CallbackQueryHandler(deposit_telebirr, pattern="^deposit_telebirr$"))
-    application.add_handler(CallbackQueryHandler(deposit_cbe, pattern="^deposit_cbe$"))
-    application.add_handler(CallbackQueryHandler(deposit_cbebirr, pattern="^deposit_cbebirr$"))
-    application.add_handler(CallbackQueryHandler(deposit_boa, pattern="^deposit_boa$"))
+    application.add_handler(
+        CallbackQueryHandler(deposit_account_handler, pattern="^deposit_account_")
+    )
     application.add_handler(CallbackQueryHandler(transfer_start, pattern="^transfer$"))
     application.add_handler(CallbackQueryHandler(invite_handler, pattern="^invite$"))
     application.add_handler(CallbackQueryHandler(confirm_transfer, pattern="^confirm_transfer$"))

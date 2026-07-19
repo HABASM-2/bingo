@@ -121,3 +121,31 @@ def pick_dummy_name(round_id: str, bot_user_id: str) -> str:
     digest = hashlib.sha256(seed).hexdigest()
     idx = int(digest, 16) % len(DUMMY_FIRST_NAMES)
     return DUMMY_FIRST_NAMES[idx]
+
+
+def label5(name: str) -> str:
+    """Compact board label: first 5 letters of the display name."""
+
+    letters = "".join(ch for ch in (name or "") if ch.isalpha())
+    if letters:
+        return letters[:5]
+    stripped = (name or "").strip()
+    return stripped[:5] if stripped else "?"
+
+
+def pick_unused_dummy(round_id: str, salt: str | int, used: set[str]) -> str:
+    """Pick a dummy name not already in ``used`` (stable start from round+salt).
+
+    Walks the pool from a hash seed so each bot-held number gets a distinct
+    public label within the round. If the ~100-name pool is exhausted, appends
+    a numeric suffix.
+    """
+
+    seed = f"{round_id}:{salt}".encode()
+    digest = hashlib.sha256(seed).hexdigest()
+    start = int(digest, 16) % len(DUMMY_FIRST_NAMES)
+    for offset in range(len(DUMMY_FIRST_NAMES)):
+        name = DUMMY_FIRST_NAMES[(start + offset) % len(DUMMY_FIRST_NAMES)]
+        if name not in used:
+            return name
+    return f"{DUMMY_FIRST_NAMES[start]}{salt}"

@@ -142,14 +142,13 @@ class LottoTests(TestCase):
         round_.draw_scheduled_at = service.utcnow() - timedelta(seconds=1)
         self.db.commit()
         with mock.patch(
-            "app.lotto.service.secrets.SystemRandom.sample",
+            "app.lotto.service.draw_winning_numbers",
             return_value=[1, 2, 3],
-        ) as sample_mock:
+        ) as draw_mock:
             self.assertTrue(service.settle_due_round(self.db, round_id))
-            sample_mock.assert_called_once()
-            args = sample_mock.call_args.args
-            population = args[0] if isinstance(args[0], (list, tuple, set)) else args[1]
-            self.assertEqual(set(population), set(range(1, 26)))
+            draw_mock.assert_called_once()
+            # Same owner on all seats — allowed monopoly fallback; three ranks paid.
+            self.assertEqual(self.db.query(LottoWinner).count(), 3)
         self.db.refresh(self.user)
         self.assertEqual(self.db.query(LottoWinner).count(), 3)
         self.assertEqual(
@@ -179,7 +178,7 @@ class LottoTests(TestCase):
         round_.draw_scheduled_at = service.utcnow() - timedelta(seconds=1)
         self.db.commit()
         with mock.patch(
-            "app.lotto.service.secrets.SystemRandom.sample",
+            "app.lotto.service.draw_winning_numbers",
             return_value=[1, 2, 3],
         ):
             service.settle_due_round(self.db, round_id)
@@ -217,6 +216,7 @@ class LottoTests(TestCase):
         self.assertEqual(room["third_prize"], "30.00")
         self.assertEqual(room["reserve_amount"], "10.00")
         self.assertEqual(room["reservations"][0]["display_name"], "One")
+        self.assertEqual(room["reservations"][0]["label5"], "One")
 
     def test_winners_drawn_from_reserved_numbers_only(self):
         self.reserve(self.user, list(range(1, 26)))
@@ -224,9 +224,118 @@ class LottoTests(TestCase):
         round_.draw_scheduled_at = service.utcnow() - timedelta(seconds=1)
         self.db.commit()
         with mock.patch(
-            "app.lotto.service.secrets.SystemRandom.sample",
-            side_effect=lambda *args: sorted(args[-2])[: args[-1]],
+            "app.lotto.service.draw_winning_numbers",
+            return_value=[1, 2, 3],
         ):
             self.assertTrue(service.settle_due_round(self.db, round_.id))
         numbers = {w.number for w in self.db.query(LottoWinner).all()}
         self.assertEqual(numbers, {1, 2, 3})
+
+    def test_draw_enforces_unique_users_across_ranks(self):
+        """One player holding many seats may win at most one rank."""
+        third = User(
+            telegram_id=103,
+            first_name="Three",
+            referral_code="LOTTO_THREE",
+            balance=Decimal("1000.00"),
+        )
+        self.db.add(third)
+        self.db.commit()
+        self.reserve(self.user, list(range(1, 11)))
+        self.reserve(self.other, list(range(11, 21)))
+        self.reserve(third, list(range(21, 26)))
+        round_ = self.db.query(LottoRound).filter_by(status="countdown").one()
+        reservations = {
+            item.number: item
+            for item in self.db.query(LottoReservation)
+            .filter(LottoReservation.round_id == round_.id)
+            .all()
+        }
+
+        def force_order(seq):
+            # Prefer One's numbers first — uniqueness must still skip to other users.
+            preferred = [1, 2, 3, 11, 12, 21]
+            rest = [n for n in range(1, 26) if n not in preferred]
+            seq[:] = preferred + rest
+
+        with mock.patch(
+            "app.lotto.service.secrets.SystemRandom.shuffle",
+            side_effect=force_order,
+        ):
+            picked = service.draw_winning_numbers(reservations, count=3)
+        self.assertEqual(picked, [1, 11, 21])
+        user_ids = {reservations[n].user_id for n in picked}
+        self.assertEqual(len(user_ids), 3)
+
+    def test_reveal_interval_covers_long_spin_ceremony(self):
+        self.assertGreaterEqual(service.REVEAL_INTERVAL_SECONDS, 16.0)
+        self.assertGreaterEqual(service.POST_THIRD_HOLD_SECONDS, 10.0)
+        self.assertAlmostEqual(
+            service.DRAW_COMPLETE_SECONDS,
+            service.REVEAL_INTERVAL_SECONDS * 3 + service.POST_THIRD_HOLD_SECONDS,
+            places=3,
+        )
+
+    def test_duplicate_request_id_is_idempotent_replay(self):
+        request_id = uuid.uuid4()
+        first = self.reserve(self.user, [5, 6], request_id=request_id)
+        self.assertFalse(first["replayed"])
+        balance_after = self.user.balance
+        second = self.reserve(self.user, [5, 6], request_id=request_id)
+        self.assertTrue(second["replayed"])
+        self.db.refresh(self.user)
+        self.assertEqual(self.user.balance, balance_after)
+        self.assertEqual(self.db.query(WalletTransaction).count(), 1)
+
+    def test_integrity_error_same_request_id_recovers_as_replay(self):
+        """Concurrent double-submit: early idempotency miss -> IntegrityError -> replay."""
+        request_id = uuid.uuid4()
+        first = self.reserve(self.user, [9], request_id=request_id)
+        self.assertFalse(first["replayed"])
+        balance_after = self.user.balance
+
+        call_count = {"n": 0, "occ": 0}
+        real_query = self.db.query
+
+        def query_with_miss(*args, **kwargs):
+            result = real_query(*args, **kwargs)
+            if (
+                call_count["n"] == 0
+                and args
+                and args[0] is LottoReservationRequest
+            ):
+                call_count["n"] += 1
+                empty = mock.MagicMock()
+                empty.filter.return_value.first.return_value = None
+                return empty
+            if (
+                call_count["occ"] == 0
+                and args
+                and getattr(args[0], "class_", None) is LottoReservation
+                and getattr(args[0], "key", None) == "number"
+            ):
+                call_count["occ"] += 1
+                empty = mock.MagicMock()
+                empty.filter.return_value.all.return_value = []
+                return empty
+            return result
+
+        with mock.patch.object(self.db, "query", side_effect=query_with_miss):
+            replay = service.reserve(
+                self.db,
+                user_id=self.user.id,
+                raw_stake="10",
+                raw_numbers=[9],
+                request_id=request_id,
+            )
+        self.assertTrue(replay["replayed"])
+        self.db.refresh(self.user)
+        self.assertEqual(self.user.balance, balance_after)
+        self.assertEqual(self.db.query(WalletTransaction).count(), 1)
+
+    def test_reserve_after_countdown_started_is_conflict(self):
+        self.reserve(self.user, list(range(1, 26)))
+        with self.assertRaises(service.LottoError) as ctx:
+            self.reserve(self.other, [1])
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertIn("no longer open", str(ctx.exception).lower())

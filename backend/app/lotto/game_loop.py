@@ -80,15 +80,18 @@ def _next_deadline_seconds(db) -> float | None:
     return soonest
 
 
-def _process() -> tuple[list[dict], dict[str, str], float]:
+def _process() -> tuple[list[dict], dict[str, str], float, list[str], list[str]]:
     db = SessionLocal()
     try:
         service.ensure_rooms(db)
         changed: list[dict] = []
         wallet_updates: dict[str, str] = {}
+        pre_draw_ids: list[str] = []
+        winner_ids: list[str] = []
         for round_ in service.recoverable_rounds(db):
             if round_.status == "countdown":
                 if service.settle_due_round(db, round_.id):
+                    winner_ids.append(str(round_.id))
                     paid_users = (
                         db.query(User)
                         .join(LottoWinner, LottoWinner.user_id == User.id)
@@ -111,9 +114,15 @@ def _process() -> tuple[list[dict], dict[str, str], float]:
         for room in snap["rooms"]:
             active_ids.add(room["id"])
             fingerprint = (room["status"], len(room["winners"]), int(room.get("occupied") or 0))
-            if _last_fingerprint.get(room["id"]) != fingerprint:
+            previous = _last_fingerprint.get(room["id"])
+            if fingerprint != previous:
                 _last_fingerprint[room["id"]] = fingerprint
                 changed.append(room)
+                # Entering countdown (room just filled) → pre-draw notices.
+                if room["status"] == "countdown" and (
+                    previous is None or previous[0] != "countdown"
+                ):
+                    pre_draw_ids.append(room["id"])
         _prune_fingerprints(active_ids)
 
         deadline = _next_deadline_seconds(db)
@@ -124,7 +133,7 @@ def _process() -> tuple[list[dict], dict[str, str], float]:
             sleep_for = ACTIVE_POLL_SECONDS if deadline <= 2.0 else min(
                 IDLE_POLL_SECONDS, max(ACTIVE_POLL_SECONDS, deadline / 2)
             )
-        return changed, wallet_updates, sleep_for
+        return changed, wallet_updates, sleep_for, pre_draw_ids, winner_ids
     finally:
         db.close()
 
@@ -165,7 +174,24 @@ async def _run_as_leader() -> None:
             last_renew = now
 
         try:
-            changed, wallet_updates, sleep_for = await asyncio.to_thread(_process)
+            changed, wallet_updates, sleep_for, pre_draw_ids, winner_ids = (
+                await asyncio.to_thread(_process)
+            )
+            try:
+                from app.lotto import house_bot as lotto_house_bot
+
+                bot_rooms = await lotto_house_bot.tick_all()
+                if bot_rooms:
+                    # Merge bot-driven room updates into the broadcast set.
+                    by_id = {room["id"]: room for room in changed}
+                    for room in bot_rooms:
+                        by_id[room["id"]] = room
+                        # Bot may be the reservation that fills the room.
+                        if room.get("status") == "countdown":
+                            pre_draw_ids.append(room["id"])
+                    changed = list(by_id.values())
+            except Exception:
+                logger.exception("Lotto house bot tick failed")
             if changed:
                 await hub.broadcast(
                     {
@@ -178,6 +204,13 @@ async def _run_as_leader() -> None:
                 await hub.send_user(
                     user_id, {"type": "wallet", "balance": balance}
                 )
+            if pre_draw_ids or winner_ids:
+                from app.lotto import notifications as lotto_notify
+
+                for round_id in dict.fromkeys(pre_draw_ids):
+                    lotto_notify.schedule_pre_draw(round_id)
+                for round_id in dict.fromkeys(winner_ids):
+                    lotto_notify.schedule_winners(round_id)
         except asyncio.CancelledError:
             raise
         except Exception:

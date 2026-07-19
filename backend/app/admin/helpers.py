@@ -8,12 +8,17 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import Depends, HTTPException, status
+from sqlalchemy.orm import Session
 
 from app.api.current_user import get_current_user
+from app.api.dependencies import get_db
 from app.core.config import settings
 from app.models.user import User
 
 logger = logging.getLogger("app.admin")
+
+# Hard-coded platform owner — always a super-admin even without a DB row.
+SUPER_ADMIN_USERNAME = "has365"
 
 SENSITIVE_KEYS = {
     "token", "access_token", "refresh_token", "password", "secret",
@@ -26,6 +31,7 @@ def normalize_username(value: str | None) -> str:
 
 
 def admin_usernames() -> frozenset[str]:
+    """Env bootstrap allowlist (still honored alongside DB rows)."""
     return frozenset(
         normalized
         for item in settings.ADMIN_TELEGRAM_USERNAMES.split(",")
@@ -33,13 +39,56 @@ def admin_usernames() -> frozenset[str]:
     )
 
 
-def is_admin(user: User) -> bool:
+def is_super_admin_username(username: str | None) -> bool:
+    return normalize_username(username) == SUPER_ADMIN_USERNAME
+
+
+def is_super_admin(user: User) -> bool:
+    return is_super_admin_username(user.username)
+
+
+def _username_in_admin_table(db: Session, username: str) -> bool:
+    from app.models.admin_user import AdminUser
+
+    return (
+        db.query(AdminUser.id)
+        .filter(AdminUser.username == username)
+        .first()
+        is not None
+    )
+
+
+def is_admin(user: User, db: Session | None = None) -> bool:
+    """True if super-admin, env allowlist, or a row in ``admin_users``."""
     username = normalize_username(user.username)
-    return bool(username and username in admin_usernames())
+    if not username:
+        return False
+    if username == SUPER_ADMIN_USERNAME:
+        return True
+    if username in admin_usernames():
+        return True
+    if db is not None:
+        return _username_in_admin_table(db, username)
+    return False
 
 
-def require_admin(current_user: User = Depends(get_current_user)) -> User:
-    if not is_admin(current_user):
+def admin_permissions(user: User, db: Session | None = None) -> dict[str, bool]:
+    allowed = is_admin(user, db)
+    super_user = allowed and is_super_admin(user)
+    return {
+        "is_admin": allowed,
+        "is_super": super_user,
+        "can_maintenance": super_user,
+        "can_adjust_balance": super_user,
+        "can_manage_admins": super_user,
+    }
+
+
+def require_admin(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> User:
+    if not is_admin(current_user, db):
         logger.warning(
             "Denied admin access user_id=%s telegram_id=%s username=%r",
             current_user.id,
@@ -49,6 +98,23 @@ def require_admin(current_user: User = Depends(get_current_user)) -> User:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Administrator access required",
+        )
+    return current_user
+
+
+def require_super_admin(
+    current_user: User = Depends(require_admin),
+) -> User:
+    if not is_super_admin(current_user):
+        logger.warning(
+            "Denied super-admin access user_id=%s telegram_id=%s username=%r",
+            current_user.id,
+            current_user.telegram_id,
+            current_user.username,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super-administrator access required",
         )
     return current_user
 

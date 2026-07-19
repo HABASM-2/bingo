@@ -151,7 +151,7 @@ class LottoLeaderLockTests(unittest.TestCase):
 
         def process():
             calls["process"] += 1
-            return [], {}, 0.01
+            return [], {}, 0.01, [], []
 
         async def run_briefly():
             with (

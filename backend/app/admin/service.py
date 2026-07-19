@@ -149,7 +149,20 @@ def game_summary(db: Session, start: datetime | None, end: datetime | None) -> d
     lotto_payout = db.query(func.coalesce(func.sum(LottoWinner.prize), 0)).filter(
         _between(LottoWinner.created_at, start, end)
     ).scalar()
-    lotto_fee = db.query(func.coalesce(func.sum(LottoRound.reserve_amount), 0)).filter(
+    # Prefer bot-aware system_gain ((real−real_prizes)−bot×0.04) when stake
+    # breakdown was persisted; else fall back to 4% reserve_amount.
+    lotto_gain_expr = case(
+        (
+            or_(
+                LottoRound.bot_won.is_(True),
+                LottoRound.bot_stake_total > 0,
+                LottoRound.real_stake_total > 0,
+            ),
+            LottoRound.system_gain,
+        ),
+        else_=LottoRound.reserve_amount,
+    )
+    lotto_fee = db.query(func.coalesce(func.sum(lotto_gain_expr), 0)).filter(
         LottoRound.status == "completed",
         _between(LottoRound.created_at, start, end),
     ).scalar()
@@ -178,9 +191,9 @@ def game_summary(db: Session, start: datetime | None, end: datetime | None) -> d
     total_stake = total_payout = total_fee = total_ggr = ZERO
     for name, (stake, payout, players, rounds, fee) in raw.items():
         stake_d, payout_d, fee_d = Decimal(stake or 0), Decimal(payout or 0), Decimal(fee or 0)
-        # Bingo GGR / system gain uses persisted bot-aware system_gain, not
-        # raw stake−payout (which double-counts house-bot wallet circulation).
-        ggr_d = fee_d if name == "bingo" else (stake_d - payout_d)
+        # Bingo / Lotto GGR uses persisted bot-aware system_gain, not raw
+        # stake−payout (which inflates turnover with house-bot circulation).
+        ggr_d = fee_d if name in ("bingo", "lotto") else (stake_d - payout_d)
         total_stake += stake_d
         total_payout += payout_d
         total_fee += fee_d
@@ -610,6 +623,9 @@ def list_withdrawals(
             "amount": money(row.amount), "fee": money(row.fee), "method": row.method,
             "account_name": row.account_name, "account_number_masked": mask_account(row.account_number),
             "status": row.status, "created_at": row.created_at, "processed_at": row.processed_at,
+            "paid_from_account_id": (
+                str(row.paid_from_account_id) if row.paid_from_account_id else None
+            ),
         } for row, user in rows],
     }
 
@@ -617,7 +633,11 @@ def list_withdrawals(
 def decide_withdrawal(
     db: Session, admin: User, withdrawal_id: uuid.UUID, approve: bool,
     reason: str | None, request_id: uuid.UUID,
+    *,
+    paid_from_account_id: uuid.UUID | None = None,
 ) -> dict:
+    from app.admin.payment_accounts import get_enabled_withdraw_account
+
     existing = _existing_request(db, admin, request_id)
     if existing:
         expected_action = "withdrawal.approve" if approve else "withdrawal.reject"
@@ -636,11 +656,24 @@ def decide_withdrawal(
         raise HTTPException(404, "Withdrawal not found")
     if row.status != "PENDING":
         raise HTTPException(409, f"Withdrawal is already {row.status.lower()}")
-    before = {"status": row.status, "amount": row.amount}
+    before = {
+        "status": row.status,
+        "amount": row.amount,
+        "paid_from_account_id": (
+            str(row.paid_from_account_id) if row.paid_from_account_id else None
+        ),
+    }
     now = datetime.now().astimezone()
     owner = db.query(User).filter(User.id == row.user_id).with_for_update().one()
     balance_after = money(owner.balance)
+    payout_account = None
     if approve:
+        if paid_from_account_id is not None:
+            payout_account = get_enabled_withdraw_account(db, paid_from_account_id)
+            if not payout_account:
+                raise HTTPException(
+                    422, "paid_from_account_id must be an enabled withdraw account"
+                )
         balance_before = Decimal(owner.balance)
         debit = Decimal(row.amount) + Decimal(row.fee or 0)
         if balance_before < debit:
@@ -654,20 +687,29 @@ def decide_withdrawal(
             description=f"Approved {row.method} withdrawal",
         ))
         row.status = "APPROVED"
+        if payout_account is not None:
+            row.paid_from_account_id = payout_account.id
         action = "withdrawal.approve"
     else:
         row.status = "REJECTED"
         action = "withdrawal.reject"
     row.processed_at = now
+    after = {
+        "status": row.status,
+        "paid_from_account_id": (
+            str(row.paid_from_account_id) if row.paid_from_account_id else None
+        ),
+    }
     _audit(
         db, admin, action=action, target_type="withdrawal", target_id=row.id,
-        reason=reason, before=before, after={"status": row.status},
+        reason=reason, before=before, after=after,
         request_id=request_id,
     )
     db.commit()
     return {
         "idempotent": False,
         "status": row.status,
+        "paid_from_account_id": after["paid_from_account_id"],
         "notify": {
             "telegram_id": int(owner.telegram_id),
             "language_code": owner.language_code,
@@ -743,13 +785,14 @@ def audit_feed(db: Session, limit: int, offset: int) -> dict:
 
 
 async def bingo_bot_status() -> dict:
-    """Current Bingo house-bot reserving flag + live board hold count."""
+    """Current Bingo house-bot reserving flag, reserve range, + live board holds."""
 
     from app.bingo import house_bot, redis_store
     from app.bingo.service import DEFAULT_ROOM_ID
     from app.core.config import settings
 
     enabled, source = await house_bot.get_bot_enabled()
+    reserve_min, reserve_max, reserve_source = await house_bot.get_bot_reserve_range()
     room_id = settings.BINGO_BOT_ROOM_ID or DEFAULT_ROOM_ID
     boards_held = 0
     room_status = None
@@ -776,6 +819,13 @@ async def bingo_bot_status() -> dict:
     return {
         "enabled": enabled,
         "source": source,
+        "reserve_min": reserve_min,
+        "reserve_max": reserve_max,
+        # Legacy single count (min when equal; otherwise max) for older clients.
+        "reserve_count": reserve_min if reserve_min == reserve_max else reserve_max,
+        "reserve_source": reserve_source,
+        "allowed_min": house_bot.RESERVE_COUNT_MIN,
+        "allowed_max": house_bot.RESERVE_COUNT_MAX,
         "boards_held": boards_held,
         "status": status,
         "room_id": room_id,
@@ -789,40 +839,103 @@ async def set_bingo_bot_enabled(
     enabled: bool,
     request_id: uuid.UUID | None = None,
 ) -> dict:
-    """Persist Redis toggle, audit the change, and return fresh status."""
+    """Backward-compatible wrapper: toggle enabled only."""
+    return await update_bingo_bot(
+        db, admin, enabled=enabled, request_id=request_id
+    )
+
+
+async def update_bingo_bot(
+    db: Session,
+    admin: User,
+    *,
+    enabled: bool | None = None,
+    reserve_min: int | None = None,
+    reserve_max: int | None = None,
+    reserve_count: int | None = None,
+    request_id: uuid.UUID | None = None,
+) -> dict:
+    """Persist Redis toggle and/or reserve range, audit, return fresh status."""
 
     from app.bingo import house_bot
+
+    # Legacy exact count → min=max for one release.
+    if reserve_count is not None and reserve_min is None and reserve_max is None:
+        reserve_min = reserve_count
+        reserve_max = reserve_count
+
+    if enabled is None and reserve_min is None and reserve_max is None:
+        raise HTTPException(
+            422, "Provide enabled and/or reserve_min/reserve_max (or legacy reserve_count)"
+        )
 
     req = request_id or uuid.uuid4()
     existing = _existing_request(db, admin, req)
     if existing:
-        if existing.action != "bingo_bot.toggle":
-            raise HTTPException(409, "Request id was used for a different operation")
+        if existing.action != "bingo_bot.update":
+            # Legacy idempotency for older toggle-only audits.
+            if existing.action != "bingo_bot.toggle":
+                raise HTTPException(409, "Request id was used for a different operation")
         after = existing.after_data or {}
         status = await bingo_bot_status()
         status["idempotent"] = True
-        status["enabled"] = bool(after.get("enabled", status["enabled"]))
+        if "enabled" in after:
+            status["enabled"] = bool(after["enabled"])
+        if "reserve_min" in after:
+            status["reserve_min"] = int(after["reserve_min"])
+        if "reserve_max" in after:
+            status["reserve_max"] = int(after["reserve_max"])
+        if "reserve_count" in after and "reserve_min" not in after:
+            status["reserve_count"] = int(after["reserve_count"])
+            status["reserve_min"] = int(after["reserve_count"])
+            status["reserve_max"] = int(after["reserve_count"])
         return status
 
     before = await bingo_bot_status()
-    await house_bot.set_bot_enabled(enabled)
-    # When turning off, kick a drain tick so lobby boards release promptly.
-    if not enabled:
-        try:
-            await house_bot.tick_room(before.get("room_id") or "default")
-        except Exception:
-            pass
+    if enabled is not None:
+        await house_bot.set_bot_enabled(enabled)
+        if not enabled:
+            try:
+                await house_bot.tick_room(before.get("room_id") or "default")
+            except Exception:
+                pass
+
+    applied_range = None
+    if reserve_min is not None or reserve_max is not None:
+        next_min = before["reserve_min"] if reserve_min is None else reserve_min
+        next_max = before["reserve_max"] if reserve_max is None else reserve_max
+        applied_range = await house_bot.set_bot_reserve_range(next_min, next_max)
 
     after = await bingo_bot_status()
     _audit(
         db,
         admin,
-        action="bingo_bot.toggle",
+        action="bingo_bot.update",
         target_type="bingo_bot",
         target_id=after.get("room_id"),
         reason=None,
-        before={"enabled": before["enabled"], "source": before["source"]},
-        after={"enabled": after["enabled"], "source": after["source"]},
+        before={
+            "enabled": before["enabled"],
+            "source": before["source"],
+            "reserve_min": before["reserve_min"],
+            "reserve_max": before["reserve_max"],
+            "reserve_source": before["reserve_source"],
+        },
+        after={
+            "enabled": after["enabled"],
+            "source": after["source"],
+            "reserve_min": after["reserve_min"],
+            "reserve_max": after["reserve_max"],
+            "reserve_source": after["reserve_source"],
+            **(
+                {
+                    "applied_reserve_min": applied_range[0],
+                    "applied_reserve_max": applied_range[1],
+                }
+                if applied_range is not None
+                else {}
+            ),
+        },
         request_id=req,
     )
     try:
@@ -830,7 +943,7 @@ async def set_bingo_bot_enabled(
     except IntegrityError:
         db.rollback()
         existing = _existing_request(db, admin, req)
-        if existing and existing.action == "bingo_bot.toggle":
+        if existing and existing.action in ("bingo_bot.update", "bingo_bot.toggle"):
             status = await bingo_bot_status()
             status["idempotent"] = True
             return status
@@ -839,3 +952,104 @@ async def set_bingo_bot_enabled(
     after["idempotent"] = False
     return after
 
+
+async def lotto_bot_status() -> dict:
+    """Current Lotto house-bot flag, reserve range, + numbers held across open rooms."""
+
+    from app.lotto import house_bot as lotto_house_bot
+
+    return await lotto_house_bot.bot_status()
+
+
+async def update_lotto_bot(
+    db: Session,
+    admin: User,
+    *,
+    enabled: bool | None = None,
+    reserve_min: int | None = None,
+    reserve_max: int | None = None,
+    request_id: uuid.UUID | None = None,
+) -> dict:
+    """Persist Redis toggle and/or Lotto reserve range, audit, return status."""
+
+    from app.lotto import house_bot as lotto_house_bot
+
+    if enabled is None and reserve_min is None and reserve_max is None:
+        raise HTTPException(422, "Provide enabled and/or reserve_min/reserve_max")
+
+    req = request_id or uuid.uuid4()
+    existing = _existing_request(db, admin, req)
+    if existing:
+        if existing.action != "lotto_bot.update":
+            raise HTTPException(409, "Request id was used for a different operation")
+        after = existing.after_data or {}
+        status = await lotto_bot_status()
+        status["idempotent"] = True
+        if "enabled" in after:
+            status["enabled"] = bool(after["enabled"])
+        if "reserve_min" in after:
+            status["reserve_min"] = int(after["reserve_min"])
+        if "reserve_max" in after:
+            status["reserve_max"] = int(after["reserve_max"])
+        return status
+
+    before = await lotto_bot_status()
+    if enabled is not None:
+        await lotto_house_bot.set_bot_enabled(enabled)
+        if not enabled:
+            try:
+                await lotto_house_bot.tick_all(force=True)
+            except Exception:
+                pass
+
+    applied_range = None
+    if reserve_min is not None or reserve_max is not None:
+        next_min = before["reserve_min"] if reserve_min is None else reserve_min
+        next_max = before["reserve_max"] if reserve_max is None else reserve_max
+        applied_range = await lotto_house_bot.set_bot_reserve_range(next_min, next_max)
+
+    after = await lotto_bot_status()
+    _audit(
+        db,
+        admin,
+        action="lotto_bot.update",
+        target_type="lotto_bot",
+        target_id="lotto",
+        reason=None,
+        before={
+            "enabled": before["enabled"],
+            "source": before["source"],
+            "reserve_min": before["reserve_min"],
+            "reserve_max": before["reserve_max"],
+            "reserve_source": before["reserve_source"],
+        },
+        after={
+            "enabled": after["enabled"],
+            "source": after["source"],
+            "reserve_min": after["reserve_min"],
+            "reserve_max": after["reserve_max"],
+            "reserve_source": after["reserve_source"],
+            **(
+                {
+                    "applied_reserve_min": applied_range[0],
+                    "applied_reserve_max": applied_range[1],
+                }
+                if applied_range is not None
+                else {}
+            ),
+        },
+        request_id=req,
+    )
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        existing = _existing_request(db, admin, req)
+        if existing and existing.action == "lotto_bot.update":
+            status = await lotto_bot_status()
+            status["idempotent"] = True
+            return status
+        raise
+
+    after["idempotent"] = False
+    return after

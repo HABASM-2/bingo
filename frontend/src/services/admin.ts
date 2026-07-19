@@ -2,10 +2,23 @@ import api from "../api/client";
 
 export const ADMIN_PAGE_SIZE = 20;
 
+export interface AdminPermissions {
+  is_admin: boolean;
+  is_super: boolean;
+  can_maintenance: boolean;
+  can_adjust_balance: boolean;
+  can_manage_admins: boolean;
+  list?: string[];
+}
+
 export interface AdminMe {
   is_admin: boolean;
+  is_super: boolean;
   username: string | null;
-  permissions: string[];
+  permissions: AdminPermissions | string[];
+  can_maintenance: boolean;
+  can_adjust_balance: boolean;
+  can_manage_admins: boolean;
 }
 
 export interface GameMetric {
@@ -78,6 +91,7 @@ export interface Payment {
   fee?: string;
   account_name?: string;
   account_number_masked?: string;
+  paid_from_account_id?: string | null;
 }
 
 export interface AuditItem {
@@ -173,10 +187,81 @@ export const decideWithdrawal = async (
   action: "approve" | "reject",
   reason: string | null,
   requestId: string,
+  paidFromAccountId?: string | null,
 ) => (await api.post(`/admin/withdrawals/${id}/${action}`, {
   reason,
   request_id: requestId,
+  paid_from_account_id: paidFromAccountId || undefined,
 })).data;
+
+export type PaymentAccountKind = "deposit" | "withdraw";
+
+export interface PaymentAccount {
+  id: string;
+  kind: PaymentAccountKind;
+  bank: string;
+  account_name: string;
+  account_number: string;
+  is_enabled: boolean;
+  sort_order: number;
+  created_at?: string | null;
+  updated_at?: string | null;
+  idempotent?: boolean;
+}
+
+export const listPaymentAccounts = async (
+  kind?: PaymentAccountKind,
+): Promise<{ items: PaymentAccount[]; total: number }> =>
+  (await api.get("/admin/payment-accounts", {
+    params: kind ? { kind } : undefined,
+  })).data;
+
+export const createPaymentAccount = async (payload: {
+  kind: PaymentAccountKind;
+  bank: string;
+  account_name: string;
+  account_number: string;
+  is_enabled?: boolean;
+  sort_order?: number;
+  requestId: string;
+}): Promise<PaymentAccount> =>
+  (await api.post("/admin/payment-accounts", {
+    kind: payload.kind,
+    bank: payload.bank,
+    account_name: payload.account_name,
+    account_number: payload.account_number,
+    is_enabled: payload.is_enabled ?? true,
+    sort_order: payload.sort_order ?? 0,
+    request_id: payload.requestId,
+  })).data;
+
+export const updatePaymentAccount = async (
+  id: string,
+  payload: {
+    bank?: string;
+    account_name?: string;
+    account_number?: string;
+    is_enabled?: boolean;
+    sort_order?: number;
+    requestId: string;
+  },
+): Promise<PaymentAccount> =>
+  (await api.patch(`/admin/payment-accounts/${id}`, {
+    bank: payload.bank,
+    account_name: payload.account_name,
+    account_number: payload.account_number,
+    is_enabled: payload.is_enabled,
+    sort_order: payload.sort_order,
+    request_id: payload.requestId,
+  })).data;
+
+export const deletePaymentAccount = async (
+  id: string,
+  requestId: string,
+): Promise<{ id: string; deleted: boolean; idempotent?: boolean }> =>
+  (await api.delete(`/admin/payment-accounts/${id}`, {
+    params: { request_id: requestId },
+  })).data;
 
 export const getGamePlayers = async (
   game: string,
@@ -213,6 +298,13 @@ export const getAudit = async (params: {
 export interface BingoBotStatus {
   enabled: boolean;
   source: "redis" | "env";
+  reserve_min: number;
+  reserve_max: number;
+  /** @deprecated Prefer reserve_min/max; kept for legacy clients. */
+  reserve_count?: number;
+  reserve_source?: "redis" | "default" | "legacy";
+  allowed_min?: number;
+  allowed_max?: number;
   boards_held: number;
   status: "active" | "inactive" | "draining" | "in_round";
   room_id?: string;
@@ -224,11 +316,50 @@ export const getBingoBot = async (): Promise<BingoBotStatus> =>
   (await api.get("/admin/bingo-bot")).data;
 
 export const setBingoBot = async (
-  enabled: boolean,
+  payload: {
+    enabled?: boolean;
+    reserve_min?: number;
+    reserve_max?: number;
+    /** @deprecated Accepts as min=max for one release. */
+    reserve_count?: number;
+  },
   requestId?: string,
 ): Promise<BingoBotStatus> =>
   (await api.post("/admin/bingo-bot", {
-    enabled,
+    ...payload,
+    request_id: requestId,
+  })).data;
+
+export interface LottoBotStatus {
+  enabled: boolean;
+  source: "redis" | "env";
+  reserve_min: number;
+  reserve_max: number;
+  reserve_source?: "redis" | "default";
+  allowed_min?: number;
+  allowed_max?: number;
+  numbers_held: number;
+  real_player_threshold?: number;
+  status: "active" | "inactive" | "draining";
+  rooms?: Array<{
+    stake: string;
+    round_id?: string;
+    numbers_held: number;
+    real_holders: number;
+    occupied: number;
+  }>;
+  idempotent?: boolean;
+}
+
+export const getLottoBot = async (): Promise<LottoBotStatus> =>
+  (await api.get("/admin/lotto-bot")).data;
+
+export const setLottoBot = async (
+  payload: { enabled?: boolean; reserve_min?: number; reserve_max?: number },
+  requestId?: string,
+): Promise<LottoBotStatus> =>
+  (await api.post("/admin/lotto-bot", {
+    ...payload,
     request_id: requestId,
   })).data;
 
@@ -284,4 +415,90 @@ export const purgeDataRetention = async (payload: {
     confirmation: payload.confirmation,
     reason: payload.reason,
     request_id: payload.requestId,
+  })).data;
+
+export interface DeleteUserResult {
+  idempotent: boolean;
+  mode?: string;
+  deleted_user?: Record<string, unknown>;
+  deleted_count?: number;
+  deleted_ids?: string[];
+  skipped?: Array<Record<string, unknown>>;
+  dependents?: Record<string, number>;
+  force?: boolean;
+}
+
+export const deleteAdminUser = async (payload: {
+  query: string;
+  confirmation: string;
+  reason: string;
+  requestId: string;
+  force?: boolean;
+}): Promise<DeleteUserResult> =>
+  (await api.post("/admin/users/delete", {
+    query: payload.query,
+    confirmation: payload.confirmation,
+    reason: payload.reason,
+    request_id: payload.requestId,
+    force: payload.force ?? false,
+  })).data;
+
+export const deleteAllAdminUsers = async (payload: {
+  confirmation: string;
+  reason: string;
+  requestId: string;
+  force?: boolean;
+}): Promise<DeleteUserResult> =>
+  (await api.post("/admin/users/delete-all", {
+    confirmation: payload.confirmation,
+    reason: payload.reason,
+    request_id: payload.requestId,
+    force: payload.force ?? false,
+  })).data;
+
+export interface BroadcastResult {
+  idempotent?: boolean;
+  intended: number;
+  succeeded: number;
+  failed: number;
+  errors: Array<{ telegram_id: number; error: string }>;
+  has_button?: boolean;
+  game?: string | null;
+}
+
+export const sendAdminBroadcast = async (payload: {
+  message: string;
+  buttonUrl?: string;
+  buttonLabel?: string;
+  game?: string;
+  requestId: string;
+}): Promise<BroadcastResult> =>
+  (await api.post("/admin/broadcast", {
+    message: payload.message,
+    button_url: payload.buttonUrl || null,
+    button_label: payload.buttonLabel || null,
+    game: payload.game || null,
+    request_id: payload.requestId,
+  })).data;
+
+export interface ManagedAdmin {
+  username: string;
+  is_super: boolean;
+  created_by: string | null;
+  created_at: string | null;
+  managed: boolean;
+}
+
+export const listAdmins = async (): Promise<{ items: ManagedAdmin[]; total: number }> =>
+  (await api.get("/admin/admins")).data;
+
+export const addAdmin = async (username: string, requestId: string) =>
+  (await api.post("/admin/admins", {
+    username,
+    request_id: requestId,
+  })).data;
+
+export const removeAdmin = async (username: string, requestId: string) =>
+  (await api.delete(`/admin/admins/${encodeURIComponent(username)}`, {
+    params: { request_id: requestId },
   })).data;

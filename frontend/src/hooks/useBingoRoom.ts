@@ -21,6 +21,8 @@ interface UseBingoRoomResult {
   secondsLeft: number;
   gameOver: GameOverMessage | null;
   toast: string | null;
+  /** Self-destructive cross-tab Lotto notice (e.g. about to draw). */
+  lottoNotice: string | null;
   errorMessage: string | null;
   selectBoard: (boardId: number) => void;
   deselectBoard: (boardId: number) => void;
@@ -28,6 +30,7 @@ interface UseBingoRoomResult {
   claimBingo: (cardId: string) => void;
   refresh: () => void;
   dismissToast: () => void;
+  dismissLottoNotice: () => void;
   showToast: (message: string) => void;
 }
 
@@ -39,9 +42,11 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
   const [secondsLeft, setSecondsLeft] = useState(0);
   const [gameOver, setGameOver] = useState<GameOverMessage | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [lottoNotice, setLottoNotice] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lottoNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Countdown is driven by an authoritative server value but interpolated
   // locally so it ticks down smoothly and NEVER freezes between server
   // messages: we store the last server-reported seconds_left together with the
@@ -69,6 +74,13 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
 
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = setTimeout(() => setToast(null), 2600);
+  }, []);
+
+  const flashLottoNotice = useCallback((message: string) => {
+    setLottoNotice(message);
+
+    if (lottoNoticeTimer.current) clearTimeout(lottoNoticeTimer.current);
+    lottoNoticeTimer.current = setTimeout(() => setLottoNotice(null), 7000);
   }, []);
 
   // Lock the countdown onto a fresh server value (or stop it when we've left
@@ -172,6 +184,19 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
           flashToast(mapServerMessage(getLanguage(), message.message));
           break;
 
+        case "lotto_notice":
+          // Only nudge users to open Lotto when a round is about to start.
+          // Winner announcements live in Telegram + the in-game UI — no toast.
+          if (message.kind === "pre_draw") {
+            flashLottoNotice(
+              tGlobal("lotto.startedToast", {
+                stake: message.stake,
+                seconds: message.seconds,
+              }),
+            );
+          }
+          break;
+
         case "error": {
           const localizedMessage = mapServerMessage(getLanguage(), message.message);
           setErrorMessage(localizedMessage);
@@ -200,7 +225,7 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
           break;
       }
     },
-    [flashToast, syncCountdown],
+    [flashLottoNotice, flashToast, syncCountdown],
   );
 
   const { status, send, reconnectAttempt, latencyMs } = useWebSocket<
@@ -241,6 +266,7 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
   useEffect(() => {
     return () => {
       if (toastTimer.current) clearTimeout(toastTimer.current);
+      if (lottoNoticeTimer.current) clearTimeout(lottoNoticeTimer.current);
     };
   }, []);
 
@@ -332,6 +358,7 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
   const refresh = useCallback(() => send({ type: "join" }), [send]);
 
   const dismissToast = useCallback(() => setToast(null), []);
+  const dismissLottoNotice = useCallback(() => setLottoNotice(null), []);
 
   return {
     connectionStatus: status,
@@ -344,6 +371,7 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
     secondsLeft,
     gameOver,
     toast,
+    lottoNotice,
     errorMessage,
     selectBoard,
     deselectBoard,
@@ -351,6 +379,7 @@ export function useBingoRoom(roomId: string | null, token: string | null): UseBi
     claimBingo,
     refresh,
     dismissToast,
+    dismissLottoNotice,
     showToast: flashToast,
   };
 }

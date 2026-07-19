@@ -7,6 +7,7 @@ username, names, language, is_bot, referral codes, flags, etc.) and never
 touches ``alembic_version``. Deletes operational game/payment/ledger/audit
 history and **zeros every user balance** so the wallet matches a wiped ledger.
 Admin and house-bot user rows are retained like any other user.
+Confirmation word: ``CLEAR``.
 
 Games-only (``games_only``)
 ---------------------------
@@ -17,8 +18,12 @@ withdraw/deposit/transfer requests, referral/SMS rows, non-game ledger txs,
 and admin audit logs. Flushes Redis game room keys like clear-all.
 Confirmation word: ``CLEAR_GAMES``.
 
-Age-based options delete rows with ``created_at`` **older than** the retention
-window (recent data is kept). Balances and Redis game rooms are left alone.
+Age-based options (``7d`` … ``150d``)
+-------------------------------------
+Same **game-history-only** scope as ``games_only``, but only rows with
+``created_at`` **older than** the retention window (recent game data kept).
+Does **not** delete deposits, withdrawals, balances, non-game ledger, or
+audits. Does **not** flush Redis. Confirmation word: ``DELETE``.
 """
 
 from __future__ import annotations
@@ -83,6 +88,16 @@ REDIS_FLUSH_PATTERNS = ("bingo:*", "aviator:*", "dama:*", "lotto:*")
 
 def _is_games_only(option: str) -> bool:
     return option == "games_only"
+
+
+def _is_age_option(option: str) -> bool:
+    days = RETENTION_OPTIONS.get(option)
+    return days is not None
+
+
+def _is_game_history_option(option: str) -> bool:
+    """Age windows and games_only purge game rows only (keep payments/balances)."""
+    return _is_games_only(option) or _is_age_option(option)
 
 
 def _should_flush_redis(option: str) -> bool:
@@ -197,49 +212,47 @@ def preview_purge(db: Session, option: str) -> dict:
     if option not in RETENTION_OPTIONS:
         raise HTTPException(422, "Unknown retention option")
 
-    if _is_games_only(option):
-        counts = {**_game_entity_counts(db, None), **_empty_payment_counts()}
-        # Prefer explicit game-ledger count (already in _game_entity_counts).
-        users_kept = int(db.query(func.count()).select_from(User).scalar() or 0)
+    users_kept = int(db.query(func.count()).select_from(User).scalar() or 0)
+
+    if _is_game_history_option(option):
+        cutoff = _cutoff_for(option)
+        counts = {**_game_entity_counts(db, cutoff), **_empty_payment_counts()}
         return {
             "option": option,
-            "cutoff": None,
+            "cutoff": cutoff.isoformat() if cutoff else None,
             "confirmation_required": _confirm_word(option),
             "keeps_users": True,
             "keeps_payments": True,
             "zeros_balances": False,
-            "flushes_redis_game_keys": True,
+            "flushes_redis_game_keys": _should_flush_redis(option),
             "users_kept": users_kept,
             "balances_to_zero": 0,
             "counts": counts,
             "total_rows": sum(counts.values()),
         }
 
-    cutoff = _cutoff_for(option)
+    # Clear-all (format except users).
     counts = {
-        **_game_entity_counts(db, cutoff),
-        "deposits": _count(db, Deposit, _as_naive_utc(cutoff)),
-        "deposit_requests": _count(db, DepositRequest, cutoff),
-        "withdraw_requests": _count(db, WithdrawRequest, cutoff),
-        "transfer_requests": _count(db, TransferRequest, cutoff),
-        "referral_rewards": _count(db, ReferralReward, cutoff),
-        "sms_transactions": _count(db, SMSTransaction, cutoff),
-        # Age / clear-all: all ledger rows in window (not only game types).
-        "wallet_transactions": _count(db, WalletTransaction, cutoff),
-        "admin_audit_logs": _count(db, AdminAuditLog, cutoff),
+        **_game_entity_counts(db, None),
+        "deposits": _count(db, Deposit, None),
+        "deposit_requests": _count(db, DepositRequest, None),
+        "withdraw_requests": _count(db, WithdrawRequest, None),
+        "transfer_requests": _count(db, TransferRequest, None),
+        "referral_rewards": _count(db, ReferralReward, None),
+        "sms_transactions": _count(db, SMSTransaction, None),
+        "wallet_transactions": _count(db, WalletTransaction, None),
+        "admin_audit_logs": _count(db, AdminAuditLog, None),
     }
-    users_kept = int(db.query(func.count()).select_from(User).scalar() or 0)
-    balances_to_zero = users_kept if option == "all" else 0
     return {
         "option": option,
-        "cutoff": cutoff.isoformat() if cutoff else None,
+        "cutoff": None,
         "confirmation_required": _confirm_word(option),
         "keeps_users": True,
         "keeps_payments": False,
-        "zeros_balances": option == "all",
-        "flushes_redis_game_keys": option == "all",
+        "zeros_balances": True,
+        "flushes_redis_game_keys": True,
         "users_kept": users_kept,
-        "balances_to_zero": balances_to_zero,
+        "balances_to_zero": users_kept,
         "counts": counts,
         "total_rows": sum(counts.values()),
     }
@@ -309,36 +322,53 @@ def _delete_game_wallet_txs(db: Session, cutoff: datetime | None) -> int:
     return _batched_delete_ids(db, WalletTransaction, id_query)
 
 
-def _purge_game_tables(db: Session) -> dict[str, int]:
-    """Delete all game entity rows + game-only ledger txs. No payments/users."""
+def _purge_game_tables(db: Session, cutoff: datetime | None = None) -> dict[str, int]:
+    """Delete game entity rows + game-only ledger txs. No payments/users.
+
+    When ``cutoff`` is set, only rows older than the cutoff are removed
+    (child results/bets follow parent game/round age).
+    """
     counts: dict[str, int] = {}
 
-    counts["lotto_winners"] = _delete_model(db, LottoWinner, None)
+    counts["lotto_winners"] = _delete_model(db, LottoWinner, cutoff)
     counts["lotto_reservation_requests"] = _delete_model(
-        db, LottoReservationRequest, None
+        db, LottoReservationRequest, cutoff
     )
-    counts["lotto_reservations"] = _delete_model(db, LottoReservation, None)
-    counts["lotto_rounds"] = _delete_model(db, LottoRound, None)
+    counts["lotto_reservations"] = _delete_model(db, LottoReservation, cutoff)
+    counts["lotto_rounds"] = _delete_model(db, LottoRound, cutoff)
 
-    counts["bingo_game_results"] = _delete_model(db, BingoGameResult, None)
-    counts["bingo_games"] = _delete_model(db, BingoGame, None)
+    counts["bingo_game_results"] = _delete_children_by_parent_age(
+        db, BingoGameResult, BingoGame, BingoGameResult.game_id,
+        BingoGame.created_at, cutoff,
+    )
+    counts["bingo_games"] = _delete_model(db, BingoGame, cutoff)
 
-    counts["dama_game_results"] = _delete_model(db, DamaGameResult, None)
-    counts["dama_games"] = _delete_model(db, DamaGame, None)
+    counts["dama_game_results"] = _delete_children_by_parent_age(
+        db, DamaGameResult, DamaGame, DamaGameResult.game_id,
+        DamaGame.created_at, cutoff,
+    )
+    counts["dama_games"] = _delete_model(db, DamaGame, cutoff)
 
-    counts["aviator_bets"] = _delete_model(db, AviatorBet, None)
-    counts["aviator_rounds"] = _delete_model(db, AviatorRound, None)
+    counts["aviator_bets"] = _delete_children_by_parent_age(
+        db, AviatorBet, AviatorRound, AviatorBet.round_id,
+        AviatorRound.created_at, cutoff,
+    )
+    counts["aviator_rounds"] = _delete_model(db, AviatorRound, cutoff)
 
-    counts["plinko_plays"] = _delete_model(db, PlinkoPlay, None)
+    counts["plinko_plays"] = _delete_model(db, PlinkoPlay, cutoff)
 
-    counts["wallet_transactions"] = _delete_game_wallet_txs(db, None)
+    counts["wallet_transactions"] = _delete_game_wallet_txs(db, cutoff)
 
     counts.update(_empty_payment_counts())
     return counts
 
 
 def _purge_tables(db: Session, cutoff: datetime | None) -> dict[str, int]:
-    """Delete operational rows in FK-safe order. Does not touch ``users``."""
+    """Delete operational rows in FK-safe order. Does not touch ``users``.
+
+    Used only for clear-all (``cutoff=None``). Age windows use
+    :func:`_purge_game_tables` instead.
+    """
     counts: dict[str, int] = {}
 
     # Lotto rows that FK wallet_transactions must go before the ledger.
@@ -378,7 +408,7 @@ def _purge_tables(db: Session, cutoff: datetime | None) -> dict[str, int]:
 
     counts["wallet_transactions"] = _delete_model(db, WalletTransaction, cutoff)
 
-    # Age purge: drop old audits. Clear-all: drop all audits; caller writes one new.
+    # Clear-all: drop all audits; caller writes one new.
     counts["admin_audit_logs"] = _delete_model(db, AdminAuditLog, cutoff)
 
     return counts
@@ -451,10 +481,11 @@ async def run_purge(
     cutoff = _cutoff_for(option)
     users_before = int(db.query(func.count()).select_from(User).scalar() or 0)
 
-    if _is_games_only(option):
-        deleted = _purge_game_tables(db)
+    if option == "all":
+        deleted = _purge_tables(db, None)
     else:
-        deleted = _purge_tables(db, cutoff)
+        # games_only and age windows: game history only.
+        deleted = _purge_game_tables(db, cutoff)
 
     balances_zeroed = 0
     if option == "all":
@@ -482,7 +513,7 @@ async def run_purge(
         "redis_keys_deleted": 0,
         "users_kept": users_after,
         "flushed_redis": flush_redis,
-        "keeps_payments": _is_games_only(option),
+        "keeps_payments": _is_game_history_option(option),
     }
     db.add(
         AdminAuditLog(

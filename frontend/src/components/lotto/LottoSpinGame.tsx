@@ -27,6 +27,36 @@ import type {
   LottoWinner,
 } from "../../services/lotto";
 import { useI18n, tGlobal } from "../../i18n";
+import {
+  playLottoStart,
+  playLottoWinnerReveal,
+  primeLottoAudioUnlock,
+  stopLottoAudio,
+  unlockLottoAudio,
+  warmLottoAudio,
+} from "../../utils/lottoAudio";
+
+/** Persist mute only when user explicitly turns sound off. Missing key = ON. */
+const LOTTO_SOUND_STORAGE_KEY = "lotto-sound-on";
+
+function readLottoSoundOn(): boolean {
+  try {
+    const raw = window.localStorage.getItem(LOTTO_SOUND_STORAGE_KEY);
+    // Default unmuted. Only explicit "0" / "false" means muted.
+    if (raw == null || raw === "") return true;
+    return raw !== "0" && raw !== "false";
+  } catch {
+    return true;
+  }
+}
+
+function writeLottoSoundOn(on: boolean): void {
+  try {
+    window.localStorage.setItem(LOTTO_SOUND_STORAGE_KEY, on ? "1" : "0");
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
 
 export interface LottoSpinGameProps {
   isActive?: boolean;
@@ -44,7 +74,7 @@ type ServerMessage =
   | { type: "wallet"; balance: string }
   | { type: "ping" | "pong" };
 
-type SpinPhase = "idle" | "anticipation" | "spinning" | "settled";
+type SpinPhase = "idle" | "anticipation" | "cruising" | "decelerating" | "settled";
 
 const STAKES = [10, 25, 50, 100] as const;
 const CAPACITY = 25;
@@ -58,14 +88,25 @@ const COLORS = [
 ] as const;
 const PAGE_SIZE = 10;
 
-/** Premium spin pacing (ms). Rank 1 is longest; reduced-motion halves durations. */
+/** Premium two-phase spin (ms). Cruise ~8s then decelerate ~5s; settle gap for bounce. */
 const SPIN_PACING = {
-  1: { anticipation: 1200, spin: 6500, gap: 2600, turns: 8 },
-  2: { anticipation: 1000, spin: 5500, gap: 2400, turns: 7 },
-  3: { anticipation: 900, spin: 4800, gap: 2200, turns: 6 },
+  1: { anticipation: 1000, cruise: 8000, decelerate: 5000, gap: 2200, cruiseTurns: 7, decelerateTurns: 2 },
+  2: { anticipation: 900, cruise: 8000, decelerate: 5000, gap: 2000, cruiseTurns: 6, decelerateTurns: 2 },
+  3: { anticipation: 800, cruise: 8000, decelerate: 5000, gap: 2000, cruiseTurns: 6, decelerateTurns: 2 },
 } as const;
 
-const SPIN_EASING = "cubic-bezier(0.12, 0.75, 0.08, 1)";
+/**
+ * If a reveal’s `revealed_at` is older than this while we are supposedly “live”,
+ * treat it as missed (UI only, no audio/ceremony). Covers WS gaps / tab blur.
+ */
+const LIVE_REVEAL_STALE_MS = 2500;
+
+function documentIsVisible(): boolean {
+  return typeof document === "undefined" || document.visibilityState === "visible";
+}
+
+const CRUISE_EASING = "linear";
+const DECEL_EASING = "cubic-bezier(0.05, 0.85, 0.15, 1)";
 const CONTESTED_SELECTION_MSG_KEY = "lotto.numbersTaken" as const;
 
 const money = (value: string | number) =>
@@ -100,24 +141,6 @@ const rankLabel = (rank: number) =>
 
 const winnerAngle = (number: number) =>
   ((-(number - 1) * SEGMENT) % 360 + 360) % 360;
-
-function playWinnerTone(enabled: boolean) {
-  if (!enabled) return;
-  try {
-    const context = new AudioContext();
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    oscillator.frequency.setValueAtTime(620, context.currentTime);
-    oscillator.frequency.exponentialRampToValueAtTime(900, context.currentTime + 0.25);
-    gain.gain.setValueAtTime(0.06, context.currentTime);
-    gain.gain.exponentialRampToValueAtTime(0.0001, context.currentTime + 0.4);
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start();
-    oscillator.stop(context.currentTime + 0.42);
-    oscillator.addEventListener("ended", () => void context.close());
-  } catch { /* optional audio */ }
-}
 
 function pruneUnavailable(
   selected: number[],
@@ -161,17 +184,32 @@ export function LottoSpinGame({
   const [loadingHistory, setLoadingHistory] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [soundOn, setSoundOn] = useState(true);
+  // Default sound ON. localStorage only mutes when the user previously chose off.
+  const [soundOn, setSoundOn] = useState(readLottoSoundOn);
   const [rotation, setRotation] = useState(0);
   const [spinPhase, setSpinPhase] = useState<SpinPhase>("idle");
-  const [spinMs, setSpinMs] = useState<number>(SPIN_PACING[1].spin);
+  const [spinMs, setSpinMs] = useState<number>(SPIN_PACING[1].cruise);
+  const [spinEasing, setSpinEasing] = useState(DECEL_EASING);
   const [drawNotice, setDrawNotice] = useState<string | null>(null);
   const [displayWinner, setDisplayWinner] = useState<LottoWinner | null>(null);
+  /** Numbers whose reveal has fully settled (glow + bounce allowed). */
+  const [settledNumbers, setSettledNumbers] = useState<number[]>([]);
+  /** Lucky number currently mid-spin — never style until settle completes. */
+  const [spinningNumber, setSpinningNumber] = useState<number | null>(null);
+  const [bounceNumber, setBounceNumber] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
 
   const previousRoundRef = useRef<Record<number, string>>({});
   const animatedRanksRef = useRef<Record<string, number>>({});
   const animatingRankRef = useRef<{ roomId: string; rank: number } | null>(null);
+  /** Room ids that already played `start.wav` for the first spin of the round. */
+  const startAudioRoomRef = useRef<string | null>(null);
+  /**
+   * After the first sync for a room while the user is present, further ranks
+   * may play live audio. First contact (rejoin / mid-round join) is always silent.
+   */
+  const liveAudioArmedRef = useRef<Record<string, boolean>>({});
+  const roomsRef = useRef<Record<number, LottoRoom>>({});
   const rotationRef = useRef(0);
   const activeStakeRef = useRef(activeStake);
   const isActiveRef = useRef(isActive);
@@ -186,6 +224,12 @@ export function LottoSpinGame({
   isActiveRef.current = isActive;
   soundOnRef.current = soundOn;
   spinPhaseRef.current = spinPhase;
+
+  /** Present on Lotto tab with a visible document — only then is audio eligible. */
+  const isLiveAudience = useCallback(
+    () => isActiveRef.current && documentIsVisible(),
+    [],
+  );
 
   /** Record revealed winners without running wheel ceremony (background rooms / inactive tab). */
   const markRevealsApplied = useCallback((room: LottoRoom) => {
@@ -217,52 +261,187 @@ export function LottoSpinGame({
     setRotation(next);
   }, []);
 
+  /** Show winners that already happened — no ceremony, no audio. */
+  const restoreWinnersUi = useCallback((room: LottoRoom) => {
+    clearSpinTimers();
+    spinChainIdRef.current += 1;
+    animatingRankRef.current = null;
+    stopLottoAudio();
+    if (!room.winners.length) {
+      if (room.status === "open" || room.status === "countdown") {
+        setDisplayWinner(null);
+        setSettledNumbers([]);
+        setSpinningNumber(null);
+        setBounceNumber(null);
+        setDrawNotice(null);
+        setSpinPhase("idle");
+      }
+      return;
+    }
+    const latest = room.winners[room.winners.length - 1];
+    markRevealsApplied(room);
+    setDisplayWinner(latest);
+    setSettledNumbers(room.winners.map((item) => item.number));
+    setSpinningNumber(null);
+    setBounceNumber(null);
+    setDrawNotice(null);
+    setSpinPhase("idle");
+    snapWheelToNumber(latest.number);
+  }, [clearSpinTimers, markRevealsApplied, snapWheelToNumber]);
+
   const runWinnerReveal = useCallback((
     roomId: string,
     winner: LottoWinner,
     chainId: number,
   ) => {
+    // Audience left mid-wait / mid-spin — never blast audio for a missed land.
+    if (!isLiveAudience()) {
+      animatedRanksRef.current[roomId] = Math.max(
+        animatedRanksRef.current[roomId] ?? 0,
+        winner.rank,
+      );
+      animatingRankRef.current = null;
+      setSpinningNumber(null);
+      setDisplayWinner(winner);
+      setSettledNumbers((current) =>
+        current.includes(winner.number) ? current : [...current, winner.number],
+      );
+      snapWheelToNumber(winner.number);
+      setSpinPhase("idle");
+      setDrawNotice(null);
+      stopLottoAudio();
+      return;
+    }
+
     const pacing = SPIN_PACING[winner.rank as 1 | 2 | 3] ?? SPIN_PACING[3];
-    const scale = reducedMotionRef.current ? 0.45 : 1;
-    const anticipation = Math.max(400, Math.round(pacing.anticipation * scale));
-    const duration = Math.max(1800, Math.round(pacing.spin * scale));
-    const gap = Math.max(900, Math.round(pacing.gap * scale));
-    const turns = reducedMotionRef.current ? Math.max(3, pacing.turns - 3) : pacing.turns;
+    const scale = reducedMotionRef.current ? 0.4 : 1;
+    const anticipation = Math.max(350, Math.round(pacing.anticipation * scale));
+    const cruiseMs = Math.max(2200, Math.round(pacing.cruise * scale));
+    const decelerateMs = Math.max(1600, Math.round(pacing.decelerate * scale));
+    const gap = Math.max(800, Math.round(pacing.gap * scale));
+    const cruiseTurns = reducedMotionRef.current
+      ? Math.max(2, pacing.cruiseTurns - 4)
+      : pacing.cruiseTurns;
+    const decelerateTurns = reducedMotionRef.current
+      ? Math.max(1, pacing.decelerateTurns - 1)
+      : pacing.decelerateTurns;
 
     animatingRankRef.current = { roomId, rank: winner.rank };
     setDisplayWinner(null);
+    setBounceNumber(null);
+    setSpinningNumber(winner.number);
     setDrawNotice(tGlobal("lotto.drawing", { rank: rankLabel(winner.rank) }));
     setSpinPhase("anticipation");
 
     schedule(() => {
       if (spinChainIdRef.current !== chainId) return;
-      const normalized = ((rotationRef.current % 360) + 360) % 360;
-      const desired = winnerAngle(winner.number);
-      const next = rotationRef.current + turns * 360 + ((desired - normalized + 360) % 360);
-      rotationRef.current = next;
-      setSpinMs(duration);
-      setSpinPhase("spinning");
-      setDrawNotice(null);
-      setRotation(next);
-
-      schedule(() => {
-        if (spinChainIdRef.current !== chainId) return;
-        setSpinPhase("settled");
-        setDisplayWinner(winner);
-        playWinnerTone(soundOnRef.current);
+      if (!isLiveAudience()) {
         animatedRanksRef.current[roomId] = Math.max(
           animatedRanksRef.current[roomId] ?? 0,
           winner.rank,
         );
         animatingRankRef.current = null;
+        setSpinningNumber(null);
+        setDisplayWinner(winner);
+        setSettledNumbers((current) =>
+          current.includes(winner.number) ? current : [...current, winner.number],
+        );
+        snapWheelToNumber(winner.number);
+        setSpinPhase("idle");
+        setDrawNotice(null);
+        stopLottoAudio();
+        return;
+      }
+      // Phase 1: high-speed cruise — do not land on the winner yet.
+      // Keep the lucky slice unstyled for the entire cruise + decelerate window.
+      // `start.wav` once per round when the first spin action actually begins.
+      if (soundOnRef.current && startAudioRoomRef.current !== roomId) {
+        startAudioRoomRef.current = roomId;
+        playLottoStart();
+      }
+      const cruiseTarget = rotationRef.current + cruiseTurns * 360;
+      rotationRef.current = cruiseTarget;
+      setSpinMs(cruiseMs);
+      setSpinEasing(CRUISE_EASING);
+      setSpinPhase("cruising");
+      setDrawNotice(null);
+      setRotation(cruiseTarget);
+
+      schedule(() => {
+        if (spinChainIdRef.current !== chainId) return;
+        if (!isLiveAudience()) {
+          animatedRanksRef.current[roomId] = Math.max(
+            animatedRanksRef.current[roomId] ?? 0,
+            winner.rank,
+          );
+          animatingRankRef.current = null;
+          setSpinningNumber(null);
+          setDisplayWinner(winner);
+          setSettledNumbers((current) =>
+            current.includes(winner.number) ? current : [...current, winner.number],
+          );
+          snapWheelToNumber(winner.number);
+          setSpinPhase("idle");
+          stopLottoAudio();
+          return;
+        }
+        // Phase 2: decelerate onto the winning segment (still no glow/color).
+        const normalized = ((rotationRef.current % 360) + 360) % 360;
+        const desired = winnerAngle(winner.number);
+        const next =
+          rotationRef.current
+          + decelerateTurns * 360
+          + ((desired - normalized + 360) % 360);
+        rotationRef.current = next;
+        setSpinMs(decelerateMs);
+        setSpinEasing(DECEL_EASING);
+        setSpinPhase("decelerating");
+        setRotation(next);
 
         schedule(() => {
           if (spinChainIdRef.current !== chainId) return;
-          setSpinPhase("idle");
-        }, gap);
-      }, duration);
+          // Only now: winning mark + bounce after the wheel has fully stopped.
+          setSpinPhase("settled");
+          setSpinningNumber(null);
+          setDisplayWinner(winner);
+          setSettledNumbers((current) =>
+            current.includes(winner.number) ? current : [...current, winner.number],
+          );
+          setBounceNumber(winner.number);
+          animatedRanksRef.current[roomId] = Math.max(
+            animatedRanksRef.current[roomId] ?? 0,
+            winner.rank,
+          );
+          animatingRankRef.current = null;
+
+          // Bounce ends on the short gap; audio/hold can run longer (esp. 3rd→next).
+          schedule(() => {
+            if (spinChainIdRef.current !== chainId) return;
+            setBounceNumber(null);
+          }, gap);
+
+          void (async () => {
+            const playAudio =
+              soundOnRef.current && isLiveAudience();
+            if (playAudio) {
+              // Interrupt leftover start/prior clips so place→number match the land.
+              stopLottoAudio();
+              await playLottoWinnerReveal(winner.rank, winner.number);
+            } else {
+              // Same structural delay when muted / away so the next round is not rushed.
+              stopLottoAudio();
+              await playLottoWinnerReveal(winner.rank, winner.number, {
+                silent: true,
+              });
+            }
+            if (spinChainIdRef.current !== chainId) return;
+            setBounceNumber(null);
+            setSpinPhase("idle");
+          })();
+        }, decelerateMs);
+      }, cruiseMs);
     }, anticipation);
-  }, [schedule]);
+  }, [isLiveAudience, schedule, snapWheelToNumber]);
 
   const syncSpinFromRoom = useCallback((room: LottoRoom) => {
     const stake = Number(room.stake);
@@ -271,26 +450,28 @@ export function LottoSpinGame({
       return;
     }
 
-    // Tab hidden / another app screen: keep logical reveals, skip ceremony.
-    if (!isActiveRef.current) {
-      markRevealsApplied(room);
-      if (room.winners.length) {
-        const latest = room.winners[room.winners.length - 1];
-        setDisplayWinner(latest);
-        snapWheelToNumber(latest.number);
-        setSpinPhase("idle");
-        setDrawNotice(null);
-      } else if (room.status === "open" || room.status === "countdown") {
-        setDisplayWinner(null);
-        setDrawNotice(null);
-      }
+    // Not watching Lotto (or document hidden): restore UI only, never audio.
+    if (!isLiveAudience()) {
+      restoreWinnersUi(room);
+      liveAudioArmedRef.current[room.id] = false;
       return;
     }
 
     const winners = room.winners;
+
+    // First contact for this room while present: catch-up UI only, then arm for future.
+    if (!liveAudioArmedRef.current[room.id]) {
+      restoreWinnersUi(room);
+      liveAudioArmedRef.current[room.id] = true;
+      return;
+    }
+
     if (!winners.length) {
       if (room.status === "open" || room.status === "countdown") {
         setDisplayWinner(null);
+        setSettledNumbers([]);
+        setSpinningNumber(null);
+        setBounceNumber(null);
         setDrawNotice(null);
       }
       return;
@@ -304,21 +485,25 @@ export function LottoSpinGame({
     const covered = Math.max(already, animating);
     const latest = winners[winners.length - 1];
 
-    // Ceremony already running or finished for this rank — do not restart.
+    // Ceremony already running or finished for this rank — keep UI in sync.
     if (latest.rank <= covered) {
       const phase = spinPhaseRef.current;
       if (phase === "idle" && already >= latest.rank) {
         setDisplayWinner(latest);
+        setSettledNumbers(room.winners.map((item) => item.number));
         snapWheelToNumber(latest.number);
       }
       return;
     }
 
-    // Catch-up: snap past older unplayed ranks; animate only the newest.
+    // Live path: silent-snap missed/stale ranks; ceremony only for a fresh latest.
     for (const winner of winners) {
       if (winner.rank <= covered) continue;
       if (winner.rank < latest.rank) {
         animatedRanksRef.current[room.id] = winner.rank;
+        setSettledNumbers((current) =>
+          current.includes(winner.number) ? current : [...current, winner.number],
+        );
         snapWheelToNumber(winner.number);
         continue;
       }
@@ -327,29 +512,41 @@ export function LottoSpinGame({
         ? new Date(winner.revealed_at).getTime()
         : Date.now();
       const age = Date.now() - revealedAt;
-      const pacing = SPIN_PACING[winner.rank as 1 | 2 | 3] ?? SPIN_PACING[3];
-      const ceremonyBudget = pacing.anticipation + pacing.spin + pacing.gap;
-      // Too late for full ceremony (reconnect / backgrounded tab).
-      if (age > ceremonyBudget + 500) {
+      // Reveal moment already passed while we weren't eligible — UI only.
+      if (age > LIVE_REVEAL_STALE_MS) {
         animatedRanksRef.current[room.id] = winner.rank;
         animatingRankRef.current = null;
+        setSpinningNumber(null);
         setDisplayWinner(winner);
+        setSettledNumbers(room.winners.map((item) => item.number));
         snapWheelToNumber(winner.number);
         setSpinPhase("idle");
         setDrawNotice(null);
+        stopLottoAudio();
         return;
       }
 
       clearSpinTimers();
       const chainId = ++spinChainIdRef.current;
       animatingRankRef.current = { roomId: room.id, rank: winner.rank };
+      // Track the lucky number as soon as ceremony is queued so server
+      // winners data cannot amber-highlight the slice / pad mid-spin.
+      setSpinningNumber(winner.number);
       const waitForReveal = Math.max(0, revealedAt - Date.now());
       schedule(() => {
         if (spinChainIdRef.current !== chainId) return;
         runWinnerReveal(room.id, winner, chainId);
       }, waitForReveal);
     }
-  }, [clearSpinTimers, markRevealsApplied, runWinnerReveal, schedule, snapWheelToNumber]);
+  }, [
+    clearSpinTimers,
+    isLiveAudience,
+    markRevealsApplied,
+    restoreWinnersUi,
+    runWinnerReveal,
+    schedule,
+    snapWheelToNumber,
+  ]);
 
   const applyRoom = useCallback((room: LottoRoom) => {
     const stake = Number(room.stake);
@@ -360,44 +557,62 @@ export function LottoSpinGame({
     for (const id of Object.keys(animatedRanksRef.current)) {
       if (!keep.has(id) && id !== room.id) {
         delete animatedRanksRef.current[id];
+        delete liveAudioArmedRef.current[id];
       }
     }
     const roundChanged = Boolean(previousId && previousId !== room.id);
-    const viewing =
-      stake === activeStakeRef.current && isActiveRef.current;
+    const onActiveStake = stake === activeStakeRef.current;
+    const live = onActiveStake && isLiveAudience();
 
     if (roundChanged) {
       animatedRanksRef.current[room.id] = 0;
-      // Only reset the visible wheel UI when this is the room being shown.
-      if (viewing) {
+      liveAudioArmedRef.current[room.id] = false;
+      if (previousId) {
+        delete liveAudioArmedRef.current[previousId];
+      }
+      if (startAudioRoomRef.current === previousId) {
+        startAudioRoomRef.current = null;
+      }
+      // Only reset the visible wheel UI when this is the room being shown live.
+      if (live) {
         clearSpinTimers();
         spinChainIdRef.current += 1;
         animatingRankRef.current = null;
         setDisplayWinner(null);
+        setSettledNumbers([]);
+        setSpinningNumber(null);
+        setBounceNumber(null);
         setDrawNotice(null);
         setSpinPhase("idle");
+        stopLottoAudio();
       }
     }
 
     // Always keep per-stake room store current (including non-selected rooms).
-    setRooms((current) => ({ ...current, [stake]: room }));
+    setRooms((current) => {
+      const next = { ...current, [stake]: room };
+      roomsRef.current = next;
+      return next;
+    });
 
-    if (stake === activeStakeRef.current) {
+    if (onActiveStake) {
       setSelected((items) => {
         if (roundChanged) return [];
         return pruneUnavailable(items, room, submittingNumbersRef.current);
       });
     }
 
-    if (viewing) {
+    if (onActiveStake && isActiveRef.current) {
+      // Active Lotto tab (visible or hidden): sync UI; audio only when visible.
       syncSpinFromRoom(room);
     } else {
-      // Background stake or inactive tab: apply reveals to memory, no ceremony.
+      // Other stake / left Lotto: memory only, no ceremony.
       markRevealsApplied(room);
+      liveAudioArmedRef.current[room.id] = false;
     }
 
     if (room.status === "completed") setHistoryRevision((value) => value + 1);
-  }, [clearSpinTimers, markRevealsApplied, syncSpinFromRoom]);
+  }, [clearSpinTimers, isLiveAudience, markRevealsApplied, syncSpinFromRoom]);
 
   const onMessage = useCallback((message: ServerMessage) => {
     if (message.type === "snapshot") message.rooms.forEach(applyRoom);
@@ -420,6 +635,24 @@ export function LottoSpinGame({
     reducedMotionRef.current = prefersReducedMotion();
   }, []);
 
+  // Prefetch WAVs + unlock HTMLAudio on first tap (staking / mute / anywhere).
+  // Default remains unmuted; silent estimates only run when the user mutes.
+  useEffect(() => {
+    if (!isActive) return;
+    const disposeWarm = warmLottoAudio({ numbers: true });
+    const disposeUnlock = unlockLottoAudio();
+    return () => {
+      disposeWarm();
+      disposeUnlock();
+      stopLottoAudio();
+    };
+  }, [isActive]);
+
+  useEffect(() => {
+    writeLottoSoundOn(soundOn);
+    if (!soundOn) stopLottoAudio();
+  }, [soundOn]);
+
   // Clear stale UI when leaving so return shows a connecting loader.
   useEffect(() => {
     if (isActive) return;
@@ -428,15 +661,47 @@ export function LottoSpinGame({
     animatingRankRef.current = null;
     previousRoundRef.current = {};
     animatedRanksRef.current = {};
+    liveAudioArmedRef.current = {};
+    startAudioRoomRef.current = null;
     submittingNumbersRef.current = null;
+    roomsRef.current = {};
     setRooms({});
     setSelected([]);
     setDisplayWinner(null);
+    setSettledNumbers([]);
+    setSpinningNumber(null);
+    setBounceNumber(null);
     setDrawNotice(null);
     setSpinPhase("idle");
     setError(null);
     setSubmitting(false);
+    stopLottoAudio();
   }, [isActive, clearSpinTimers]);
+
+  // Document blur while on Lotto: freeze ceremony, keep winners on screen, skip audio forever for those ranks.
+  useEffect(() => {
+    if (!isActive) return;
+    const onVisibility = () => {
+      const room = roomsRef.current[activeStakeRef.current];
+      if (document.visibilityState === "hidden") {
+        if (room) restoreWinnersUi(room);
+        else {
+          clearSpinTimers();
+          spinChainIdRef.current += 1;
+          animatingRankRef.current = null;
+          stopLottoAudio();
+        }
+        return;
+      }
+      // Return to tab: show current state silently; re-arm only after catch-up.
+      if (room) {
+        liveAudioArmedRef.current[room.id] = false;
+        syncSpinFromRoom(room);
+      }
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => document.removeEventListener("visibilitychange", onVisibility);
+  }, [isActive, clearSpinTimers, restoreWinnersUi, syncSpinFromRoom]);
 
   // Snapshot + WS catch-up only while the tab is active.
   useEffect(() => {
@@ -479,6 +744,7 @@ export function LottoSpinGame({
   }, [historyPage, historyRevision, isActive, loadHistory, view]);
 
   const room = rooms[activeStake];
+
   const owners = useMemo(
     () => new Map((room?.reservations ?? []).map((item) => [item.number, item])),
     [room],
@@ -487,11 +753,12 @@ export function LottoSpinGame({
   const countdown = room?.draw_scheduled_at
     ? Math.max(0, Math.ceil((new Date(room.draw_scheduled_at).getTime() - now) / 1000))
     : 0;
-  const spinning = spinPhase === "spinning";
+  const spinning = spinPhase === "cruising" || spinPhase === "decelerating";
   const showWinnerOverlay =
     (spinPhase === "settled" || spinPhase === "idle") && displayWinner != null;
   const wheelTransition =
-    spinning && spinMs > 0 ? `transform ${spinMs}ms ${SPIN_EASING}` : "none";
+    spinning && spinMs > 0 ? `transform ${spinMs}ms ${spinEasing}` : "none";
+  const settledSet = useMemo(() => new Set(settledNumbers), [settledNumbers]);
 
   const toggleNumber = (number: number) => {
     if (!open || owners.has(number) || submitting) return;
@@ -535,10 +802,22 @@ export function LottoSpinGame({
           });
         }
       } catch { /* keep original error */ }
-      const contestedLike =
+      // Store a user-facing message once — do not wrap again with ts() in JSX.
+      const text = detail ?? "";
+      if (
         contested.length > 0 ||
-        /already reserved|reserved by another|just taken/i.test(detail ?? "");
-      setError(contestedLike ? t(CONTESTED_SELECTION_MSG_KEY) : (detail ? ts(detail) : t("lotto.reserveFailed")));
+        /already reserved|reserved by another|just taken/i.test(text)
+      ) {
+        setError(t(CONTESTED_SELECTION_MSG_KEY));
+      } else if (/no longer open|countdown|drawing/i.test(text)) {
+        setError(t("lotto.roundClosed"));
+      } else if (/not enough open positions|room full/i.test(text)) {
+        setError(t("lotto.roomFull"));
+      } else if (/insufficient balance/i.test(text)) {
+        setError(ts(text));
+      } else {
+        setError(detail ? ts(detail) : t("lotto.reserveFailed"));
+      }
     } finally {
       submittingNumbersRef.current = null;
       setSubmitting(false);
@@ -557,12 +836,25 @@ export function LottoSpinGame({
   }
 
   return (
-    <div className="min-h-0 flex-1 overflow-y-auto bg-[#eef3f8] text-slate-950 [scrollbar-width:none] dark:bg-[#070d1a] dark:text-white">
+    <div
+      className="min-h-0 flex-1 overflow-y-auto bg-[#eef3f8] text-slate-950 [scrollbar-width:none] dark:bg-[#070d1a] dark:text-white"
+      onPointerDownCapture={() => {
+        if (soundOn) primeLottoAudioUnlock();
+      }}
+    >
       <style>{`
         @keyframes lotto-pop { 0% { transform: scale(.75); opacity: 0 } 100% { transform: scale(1); opacity: 1 } }
         .lotto-pop { animation: lotto-pop .45s ease-out both; }
+        @keyframes lotto-slice-bounce {
+          0% { transform: scale(1); }
+          35% { transform: scale(1.07); }
+          65% { transform: scale(0.96); }
+          100% { transform: scale(1); }
+        }
+        .lotto-slice-bounce { transform-box: fill-box; transform-origin: center; animation: lotto-slice-bounce .55s ease-out both; }
         @media (prefers-reduced-motion: reduce) {
           .lotto-pop { animation: none; opacity: 1; transform: none; }
+          .lotto-slice-bounce { animation: none; }
         }
       `}</style>
       <div className="mx-auto flex min-h-full w-full max-w-[460px] flex-col px-3 pb-5 pt-2">
@@ -578,7 +870,18 @@ export function LottoSpinGame({
               </p>
             </div>
           </div>
-          <button type="button" onClick={() => setSoundOn((value) => !value)} className="flex h-9 w-9 items-center justify-center rounded-xl bg-white shadow-sm dark:bg-[#10192b]">
+          <button
+            type="button"
+            onClick={() => {
+              setSoundOn((value) => {
+                const next = !value;
+                if (next) primeLottoAudioUnlock();
+                return next;
+              });
+            }}
+            className="flex h-9 w-9 items-center justify-center rounded-xl bg-white shadow-sm dark:bg-[#10192b]"
+            aria-label={soundOn ? "Mute sound" : "Unmute sound"}
+          >
             {soundOn ? <Volume2 size={16} /> : <VolumeX size={16} />}
           </button>
         </header>
@@ -629,18 +932,28 @@ export function LottoSpinGame({
                     if (stake === activeStakeRef.current) return;
                     // Stop local wheel ceremony only — do not discard other rooms' draw state.
                     const leaving = rooms[activeStakeRef.current];
-                    if (leaving) markRevealsApplied(leaving);
+                    if (leaving) {
+                      markRevealsApplied(leaving);
+                      liveAudioArmedRef.current[leaving.id] = false;
+                    }
                     clearSpinTimers();
                     spinChainIdRef.current += 1;
                     animatingRankRef.current = null;
+                    stopLottoAudio();
                     activeStakeRef.current = stake;
                     setActiveStake(stake);
                     setSelected([]);
                     setDisplayWinner(null);
+                    setSettledNumbers([]);
+                    setBounceNumber(null);
                     setDrawNotice(null);
                     setSpinPhase("idle");
                     const nextRoom = rooms[stake];
-                    if (nextRoom) syncSpinFromRoom(nextRoom);
+                    if (nextRoom) {
+                      // Stake switch = mid-join to that room: silent catch-up, then arm.
+                      liveAudioArmedRef.current[nextRoom.id] = false;
+                      syncSpinFromRoom(nextRoom);
+                    }
                   }} className={`min-w-[7.25rem] rounded-xl border px-2.5 py-2 text-left ${stake === activeStake ? "border-sky-500 bg-[#0b3158] text-white" : "border-slate-200 bg-white dark:border-white/8 dark:bg-[#10192b]"}`}>
                     <div className="flex justify-between text-xs font-black"><span>{stake} ETB</span><span className="text-[8px] uppercase opacity-60">{candidate?.status ?? "…"}</span></div>
                     <div className="mt-1.5 h-1 overflow-hidden rounded-full bg-slate-200/40"><div className="h-full bg-emerald-400" style={{ width: `${((candidate?.occupied ?? 0) / (candidate?.capacity ?? CAPACITY)) * 100}%` }} /></div>
@@ -657,10 +970,10 @@ export function LottoSpinGame({
                 <span className="flex items-center gap-1"><Clock3 size={12} /> {room.status}</span>
               </div>
               <div className="relative mx-auto aspect-[300/310] w-full max-w-[350px]">
-                {(room.status === "countdown" || room.status === "drawing") && (
+                {(room.status === "countdown" || room.status === "drawing" || (room.status === "completed" && displayWinner)) && (
                   <div className="pointer-events-none absolute left-1/2 top-[52%] z-20 w-44 -translate-x-1/2 -translate-y-1/2 rounded-2xl border border-sky-300/50 bg-[#07172d]/90 px-3 py-3 text-center text-white shadow-2xl backdrop-blur">
                     {room.status === "countdown" ? (
-                      <><p className="text-[8px] font-black uppercase text-sky-200">{t("lotto.roomFull")}</p><p className="text-4xl font-black">{countdown}</p><p className="text-[8px]">{t("lotto.drawPending")}</p></>
+                      <><p className="text-[8px] font-black uppercase text-sky-200">{t("lotto.roomFull")}</p><p className="text-4xl font-black">{countdown}</p><p className="text-[8px]">{t("lotto.drawingIn")}</p></>
                     ) : spinPhase === "anticipation" || drawNotice ? (
                       <div className="lotto-pop">
                         <Sparkles className="mx-auto text-amber-300" size={18} />
@@ -672,6 +985,8 @@ export function LottoSpinGame({
                       <div className="lotto-pop"><p className="text-[9px] font-black uppercase">{[t("lotto.first"), t("lotto.second"), t("lotto.third")][displayWinner.rank - 1]} {t("lotto.winner")}</p><p className="text-3xl font-black">#{displayWinner.number}</p><p className="truncate text-[10px] font-bold">{displayWinner.user_id === userId ? t("lotto.youLabel", { name: firstName }) : displayWinner.display_name}</p><p className="text-[10px] font-black">{money(displayWinner.prize)} {t("common.etb")}</p></div>
                     ) : spinning ? (
                       <><RotateCw className="mx-auto animate-spin text-sky-300" /><p className="mt-1 text-[9px] font-black uppercase">{t("lotto.revealing")}</p></>
+                    ) : room.status === "completed" && displayWinner ? (
+                      <div className="lotto-pop"><p className="text-[9px] font-black uppercase">{[t("lotto.first"), t("lotto.second"), t("lotto.third")][displayWinner.rank - 1]} {t("lotto.winner")}</p><p className="text-3xl font-black">#{displayWinner.number}</p><p className="truncate text-[10px] font-bold">{displayWinner.user_id === userId ? t("lotto.youLabel", { name: firstName }) : displayWinner.display_name}</p><p className="text-[10px] font-black">{money(displayWinner.prize)} {t("common.etb")}</p></div>
                     ) : (
                       <><p className="text-[9px] font-black uppercase text-sky-200">{t("lotto.drawInProgress")}</p><p className="mt-1 text-[8px] opacity-70">{t("lotto.waitingReveal")}</p></>
                     )}
@@ -682,8 +997,38 @@ export function LottoSpinGame({
                   <g style={{ transform: `rotate(${rotation}deg)`, transformOrigin: "150px 160px", transition: wheelTransition }}>
                     {Array.from({ length: CAPACITY }, (_, index) => {
                       const label = polar(-90 + index * SEGMENT, 103);
-                      const won = room.winners.find((winner) => winner.number === index + 1);
-                      return <g key={index}><path d={segmentPath(index)} fill={COLORS[index]} stroke={won ? "#fde68a" : "rgba(255,255,255,.32)"} strokeWidth={won ? 5 : 1} /><text x={label.x} y={label.y} fill="white" fontSize="10" fontWeight="900" textAnchor="middle" dominantBaseline="central" style={{ transform: `rotate(${-rotation}deg)`, transformOrigin: `${label.x}px ${label.y}px`, transition: wheelTransition }}>{index + 1}</text></g>;
+                      const number = index + 1;
+                      // Drive glow from local settle only — never from raw server
+                      // winners, and never for the number still mid-spin.
+                      const won =
+                        settledSet.has(number) && spinningNumber !== number;
+                      const bouncing = bounceNumber === number;
+                      return (
+                        <g key={index} className={bouncing ? "lotto-slice-bounce" : undefined}>
+                          <path
+                            d={segmentPath(index)}
+                            fill={COLORS[index]}
+                            stroke={won ? "#fde68a" : "rgba(255,255,255,.32)"}
+                            strokeWidth={won ? 5 : 1}
+                          />
+                          <text
+                            x={label.x}
+                            y={label.y}
+                            fill="white"
+                            fontSize="10"
+                            fontWeight="900"
+                            textAnchor="middle"
+                            dominantBaseline="central"
+                            style={{
+                              transform: `rotate(${-rotation}deg)`,
+                              transformOrigin: `${label.x}px ${label.y}px`,
+                              transition: wheelTransition,
+                            }}
+                          >
+                            {number}
+                          </text>
+                        </g>
+                      );
                     })}
                   </g>
                   <circle cx="150" cy="160" r="35" fill="#09111f" stroke="#d9aa34" strokeWidth="4" />
@@ -693,8 +1038,34 @@ export function LottoSpinGame({
               <div className="grid grid-cols-3 gap-1.5">
                 {[1, 2, 3].map((rank) => {
                   const winner = room.winners.find((item) => item.rank === rank);
-                  const highlighted = displayWinner?.rank === rank && (spinPhase === "settled" || spinPhase === "idle");
-                  return <div key={rank} className={`rounded-lg border p-1.5 text-center ${highlighted ? "border-amber-400 bg-amber-50 dark:bg-amber-400/10" : "border-slate-300 bg-white/70 dark:border-white/10 dark:bg-white/5"}`}><p className="text-[8px] font-black uppercase opacity-50">{rank === 1 ? t("lotto.rank1Short") : rank === 2 ? t("lotto.rank2Short") : t("lotto.rank3Short")} {t("lotto.winner")}</p><p className="text-xs font-black">{winner ? `#${winner.number} · ${winner.user_id === userId ? t("common.you") : winner.display_name}` : "—"}</p></div>;
+                  const spinComplete =
+                    Boolean(winner) &&
+                    settledSet.has(winner!.number) &&
+                    spinningNumber !== winner!.number;
+                  const highlighted =
+                    spinComplete &&
+                    displayWinner?.rank === rank &&
+                    (spinPhase === "settled" || spinPhase === "idle");
+                  return (
+                    <div
+                      key={rank}
+                      className={`rounded-lg border p-1.5 text-center ${
+                        highlighted
+                          ? "border-amber-400 bg-amber-50 dark:bg-amber-400/10"
+                          : "border-slate-300 bg-white/70 dark:border-white/10 dark:bg-white/5"
+                      }`}
+                    >
+                      <p className="text-[8px] font-black uppercase opacity-50">
+                        {rank === 1 ? t("lotto.rank1Short") : rank === 2 ? t("lotto.rank2Short") : t("lotto.rank3Short")}{" "}
+                        {t("lotto.winner")}
+                      </p>
+                      <p className="text-xs font-black">
+                        {spinComplete && winner
+                          ? `#${winner.number} · ${winner.user_id === userId ? t("common.you") : winner.display_name}`
+                          : "—"}
+                      </p>
+                    </div>
+                  );
                 })}
               </div>
             </section>
@@ -706,7 +1077,11 @@ export function LottoSpinGame({
                   const number = index + 1;
                   const owner = owners.get(number);
                   const chosen = !owner && selected.includes(number);
-                  const winner = room.winners.find((item) => item.number === number);
+                  // Never amber the pad from raw winners while that number spins.
+                  const winner =
+                    settledSet.has(number) && spinningNumber !== number
+                      ? room.winners.find((item) => item.number === number)
+                      : undefined;
                   return (
                     <button
                       key={number}
@@ -726,15 +1101,23 @@ export function LottoSpinGame({
                       }`}
                     >
                       <span className="text-sm font-black">{number}</span>
-                      <span className="max-w-full truncate px-1 text-[7px] font-black uppercase opacity-60">
-                        {winner ? t("lotto.rank", { rank: winner.rank }) : chosen ? t("lotto.selected") : owner?.user_id === userId ? t("common.you") : owner?.initials ?? t("lotto.open")}
+                      <span className="max-w-full truncate px-0.5 text-[7px] font-black uppercase tracking-tight opacity-70">
+                        {winner
+                          ? t("lotto.rank", { rank: winner.rank })
+                          : chosen
+                            ? t("lotto.selected")
+                            : owner?.user_id === userId
+                              ? t("common.you")
+                              : owner
+                                ? (owner.label5 ?? owner.display_name.slice(0, 5) ?? owner.initials)
+                                : t("lotto.open")}
                       </span>
                       {chosen && <Check size={9} className="absolute right-1 top-1" />}
                     </button>
                   );
                 })}
               </div>
-              {error && <p className="mt-2 rounded-md bg-rose-50 p-2 text-[9px] font-semibold text-rose-700 dark:bg-rose-400/10 dark:text-rose-200">{ts(error)}</p>}
+              {error && <p className="mt-2 rounded-md bg-rose-50 p-2 text-[9px] font-semibold text-rose-700 dark:bg-rose-400/10 dark:text-rose-200">{error}</p>}
               <button type="button" disabled={!open || !selected.length || submitting} onClick={() => void submit()} className="mt-2 flex h-10 w-full items-center justify-center gap-2 rounded-lg bg-[#0d6b55] text-[10px] font-black uppercase tracking-wide text-white disabled:opacity-40">
                 {submitting ? <Loader2 size={14} className="animate-spin" /> : <ShieldCheck size={14} />}
                 {selected.length ? t("lotto.reserveCount", { count: selected.length, total: money(selected.length * Number(room.stake)) }) : t("lotto.selectOpen")}

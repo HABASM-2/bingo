@@ -31,24 +31,25 @@ MESSAGES: dict[str, dict[str, str]] = {
         "btn.play_aviator": "Play Aviator",
         "btn.play_plinko": "Play Plinko",
         "btn.play_lotto": "Play Lotto",
-        "btn.balance": "Balance",
-        "btn.deposit": "Deposit",
-        "btn.withdraw": "Withdraw",
-        "btn.transfer": "Transfer",
-        "btn.register": "Register",
-        "btn.invite": "Invite",
-        "btn.help": "Help",
-        "btn.language": "Language",
-        "btn.support": "Support",
-        "btn.home": "Home",
-        "btn.back": "Back",
-        "btn.paid": "I've Paid",
-        "btn.confirm": "Confirm",
-        "btn.cancel": "Cancel",
-        "btn.lang_en": "English",
-        "btn.lang_am": "አማርኛ",
-        "btn.contact_support": "Contact Support",
-        "btn.cancel_pending_withdraw": "Cancel Pending Withdrawal",
+        "btn.balance": "💰 Balance",
+        "btn.deposit": "💳 Deposit",
+        "btn.withdraw": "💸 Withdraw",
+        "btn.transfer": "↔️ Transfer",
+        "btn.register": "📝 Register",
+        "btn.invite": "🎁 Invite",
+        "btn.help": "❓ Help",
+        "btn.language": "🌐 Language",
+        "btn.support": "🆘 Support",
+        "btn.home": "🏠 Home",
+        "btn.back": "⬅️ Back",
+        "btn.paid": "✅ I've Paid",
+        "btn.confirm": "✅ Confirm",
+        "btn.cancel": "❌ Cancel",
+        "btn.lang_en": "🇬🇧 English",
+        "btn.lang_am": "🇪🇹 አማርኛ",
+        "btn.contact_support": "💬 Contact Support",
+        "btn.cancel_pending_withdraw": "🚫 Cancel Pending Withdrawal",
+        "btn.deposit_account": "🏦 {bank}",
         # Menus
         "welcome": (
             "<b>Welcome, {name}!</b>\n\n"
@@ -145,9 +146,18 @@ MESSAGES: dict[str, dict[str, str]] = {
             "We can help with deposits, withdrawals, games, and account issues.\n"
             "Tap below to message support."
         ),
-        "deposit.menu": "<b>Deposit</b>\n\nChoose a payment method:",
+        "method.telebirr": "📱 Telebirr",
+        "method.cbe": "🏦 CBE",
+        "method.cbebirr": "📱 CBE Birr",
+        "method.boa": "🏦 Bank of Abyssinia",
+        "deposit.empty": (
+            "<b>Deposit</b>\n\n"
+            "No deposit accounts are available right now. Please try again later."
+        ),
+        "deposit.menu": "<b>💳 Deposit</b>\n\nChoose a bank account:",
         "deposit.method": (
-            "{title}\n\n"
+            "<b>{title}</b>\n\n"
+            "<b>Bank</b>\n{bank}\n\n"
             "<b>Account name</b>\n{account_name}\n\n"
             "<b>Account / phone</b>\n<code>{account_number}</code>\n\n"
             "<b>Minimum</b>\n10 ETB\n\n"
@@ -157,6 +167,7 @@ MESSAGES: dict[str, dict[str, str]] = {
             "3. Press <b>I've Paid</b>.\n"
             "4. Forward the SMS to this bot."
         ),
+        "deposit.title.generic": "{bank} Deposit",
         "deposit.forward_sms": "Forward your Telebirr confirmation SMS now.",
         "deposit.success": (
             "<b>Deposit successful</b>\n\n"
@@ -195,7 +206,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "transfer.amount_positive": "Amount must be greater than zero.",
         "transfer.failed": "Transfer failed. Try again.",
         "transfer.insufficient": "Not enough balance.",
-        "withdraw.select": "<b>Select withdrawal method</b>",
+        "withdraw.select": "<b>💸 Select withdrawal method</b>",
         "withdraw.pending": (
             "<b>Withdraw</b>\n\n"
             "You already have a pending withdrawal.\n\n"
@@ -246,14 +257,37 @@ MESSAGES: dict[str, dict[str, str]] = {
             "No funds were taken from your wallet. Your balance is unchanged."
         ),
         "withdraw.decision.no_reason": "No reason provided",
-        "method.telebirr": "Telebirr",
-        "method.cbe": "CBE",
-        "method.cbebirr": "CBE Birr",
-        "method.boa": "Bank of Abyssinia",
+        "lotto.pre_draw": (
+            "<b>BRIGHT GAMES</b>\n\n"
+            "🎰 <b>Lotto Spin is about to draw</b>\n\n"
+            "Room stake: <b>{stake} ETB</b>\n"
+            "Draw starts in <b>{seconds} seconds</b>\n"
+            "Your numbers: <code>{numbers}</code>\n\n"
+            "Open Lotto Spin now to watch the reveal."
+        ),
+        "lotto.winner": (
+            "<b>BRIGHT GAMES</b>\n\n"
+            "🏆 <b>You won on Lotto Spin!</b>\n\n"
+            "Room: <b>{stake} ETB</b> · <code>{code}</code>\n"
+            "Winning number: <b>{number}</b>\n"
+            "Rank: <b>{rank}</b>\n"
+            "Prize: <b>{prize} ETB</b>"
+        ),
+        "lotto.results": (
+            "<b>BRIGHT GAMES</b>\n\n"
+            "🏁 <b>Lotto Spin results</b>\n\n"
+            "Room: <b>{stake} ETB</b> · <code>{code}</code>\n"
+            "{summary}"
+        ),
+        "method.telebirr": "📱 Telebirr",
+        "method.cbe": "🏦 CBE",
+        "method.cbebirr": "📱 CBE Birr",
+        "method.boa": "🏦 Bank of Abyssinia",
         "deposit.title.telebirr": "Telebirr Deposit",
         "deposit.title.cbe": "CBE Deposit",
         "deposit.title.cbebirr": "CBE Birr Deposit",
         "deposit.title.boa": "Bank of Abyssinia Deposit",
+        "deposit.title.generic": "{bank} Deposit",
         "choose_menu": "Please choose an option from the menu.",
         "username.not_set": "Not set",
     },
@@ -279,24 +313,25 @@ MESSAGES: dict[str, dict[str, str]] = {
         "btn.play_aviator": "አቪየተር ጫወት",
         "btn.play_plinko": "ፕሊንኮ ጫወት",
         "btn.play_lotto": "ሎቶ ጫወት",
-        "btn.balance": "ቀሪ ገንዘብ",
-        "btn.deposit": "አስገባ",
-        "btn.withdraw": "አውጣ",
-        "btn.transfer": "አስተላልፍ",
-        "btn.register": "ተመዝገብ",
-        "btn.invite": "ጋብዝ",
-        "btn.help": "እገዛ",
-        "btn.language": "ቋንቋ",
-        "btn.support": "ድጋፍ",
-        "btn.home": "መነሻ",
-        "btn.back": "ተመለስ",
-        "btn.paid": "ከፍያለሁ",
-        "btn.confirm": "አረጋግጥ",
-        "btn.cancel": "ሰርዝ",
-        "btn.lang_en": "English",
-        "btn.lang_am": "አማርኛ",
-        "btn.contact_support": "ድጋፍ አነጋግር",
-        "btn.cancel_pending_withdraw": "በመጠባበቅ ላይ ያለውን ሰርዝ",
+        "btn.balance": "💰 ቀሪ ገንዘብ",
+        "btn.deposit": "💳 አስገባ",
+        "btn.withdraw": "💸 አውጣ",
+        "btn.transfer": "↔️ አስተላልፍ",
+        "btn.register": "📝 ተመዝገብ",
+        "btn.invite": "🎁 ጋብዝ",
+        "btn.help": "❓ እገዛ",
+        "btn.language": "🌐 ቋንቋ",
+        "btn.support": "🆘 ድጋፍ",
+        "btn.home": "🏠 መነሻ",
+        "btn.back": "⬅️ ተመለስ",
+        "btn.paid": "✅ ከፍያለሁ",
+        "btn.confirm": "✅ አረጋግጥ",
+        "btn.cancel": "❌ ሰርዝ",
+        "btn.lang_en": "🇬🇧 English",
+        "btn.lang_am": "🇪🇹 አማርኛ",
+        "btn.contact_support": "💬 ድጋፍ አነጋግር",
+        "btn.cancel_pending_withdraw": "🚫 በመጠባበቅ ላይ ያለውን ሰርዝ",
+        "btn.deposit_account": "🏦 {bank}",
         "welcome": (
             "<b>እንኳን ደህና መጡ፣ {name}!</b>\n\n"
             "<b>BRIGHT GAMES</b>\n"
@@ -392,9 +427,14 @@ MESSAGES: dict[str, dict[str, str]] = {
             "ስለ ተቀማጭ፣ ማውጫ፣ ጨዋታዎች እና መለያ ጉዳዮች እንረዳዎታለን።\n"
             "ድጋፍ ለማነጋገር ከታች ይጫኑ።"
         ),
-        "deposit.menu": "<b>ተቀማጭ</b>\n\nየክፍያ ዘዴ ይምረጡ፦",
+        "deposit.empty": (
+            "<b>ተቀማጭ</b>\n\n"
+            "በአሁኑ ጊዜ ምንም የተቀማጭ ሂሳብ አይገኝም። እባክዎ ቆይተው እንደገና ይሞክሩ።"
+        ),
+        "deposit.menu": "<b>💳 ተቀማጭ</b>\n\nየባንክ ሂሳብ ይምረጡ፦",
         "deposit.method": (
-            "{title}\n\n"
+            "<b>{title}</b>\n\n"
+            "<b>ባንክ</b>\n{bank}\n\n"
             "<b>የሂሳብ ስም</b>\n{account_name}\n\n"
             "<b>ሂሳብ / ስልክ</b>\n<code>{account_number}</code>\n\n"
             "<b>ዝቅተኛ</b>\n10 ብር\n\n"
@@ -404,6 +444,7 @@ MESSAGES: dict[str, dict[str, str]] = {
             "3. <b>ከፍያለሁ</b>ን ይጫኑ።\n"
             "4. ኤስኤምኤሱን ወደዚህ ቦት ያስተላልፉ።"
         ),
+        "deposit.title.generic": "{bank} ተቀማጭ",
         "deposit.forward_sms": "አሁን የቴሌብር ማረጋገጫ ኤስኤምኤስ ያስተላልፉ።",
         "deposit.success": (
             "<b>ተቀማጭ ተሳክቷል</b>\n\n"
@@ -442,7 +483,7 @@ MESSAGES: dict[str, dict[str, str]] = {
         "transfer.amount_positive": "መጠኑ ከዜሮ መብለጥ አለበት።",
         "transfer.failed": "ዝውውር አልተሳካም። እንደገና ይሞክሩ።",
         "transfer.insufficient": "በቂ ቀሪ ገንዘብ የለም።",
-        "withdraw.select": "<b>የማውጫ ዘዴ ይምረጡ</b>",
+        "withdraw.select": "<b>💸 የማውጫ ዘዴ ይምረጡ</b>",
         "withdraw.pending": (
             "<b>ማውጫ</b>\n\n"
             "አስቀድመው በመጠባበቅ ላይ ያለ ማውጫ አለዎት።\n\n"
@@ -493,14 +534,37 @@ MESSAGES: dict[str, dict[str, str]] = {
             "ከቀሪ ሂሳብዎ ምንም ገንዘብ አልተቀነሰም። ቀሪ ሂሳብዎ አልተለወጠም።"
         ),
         "withdraw.decision.no_reason": "ምክንያት አልተሰጠም",
-        "method.telebirr": "ቴሌብር",
-        "method.cbe": "ሲቢኢ",
-        "method.cbebirr": "ሲቢኢ ብር",
-        "method.boa": "አቢሲኒያ ባንክ",
+        "lotto.pre_draw": (
+            "<b>BRIGHT GAMES</b>\n\n"
+            "🎰 <b>የሎቶ ስፒን ስዕል ሊጀመር ነው</b>\n\n"
+            "የክፍል ውርርድ፦ <b>{stake} ብር</b>\n"
+            "ስዕል በ<b>{seconds} ሰከንድ</b> ውስጥ ይጀምራል\n"
+            "የእርስዎ ቁጥሮች፦ <code>{numbers}</code>\n\n"
+            "ውጤቱን ለማየት ሎቶ ስፒንን አሁን ይክፈቱ።"
+        ),
+        "lotto.winner": (
+            "<b>BRIGHT GAMES</b>\n\n"
+            "🏆 <b>በሎቶ ስፒን አሸንፈዋል!</b>\n\n"
+            "ክፍል፦ <b>{stake} ብር</b> · <code>{code}</code>\n"
+            "አሸናፊ ቁጥር፦ <b>{number}</b>\n"
+            "ደረጃ፦ <b>{rank}</b>\n"
+            "ሽልማት፦ <b>{prize} ብር</b>"
+        ),
+        "lotto.results": (
+            "<b>BRIGHT GAMES</b>\n\n"
+            "🏁 <b>የሎቶ ስፒን ውጤት</b>\n\n"
+            "ክፍል፦ <b>{stake} ብር</b> · <code>{code}</code>\n"
+            "{summary}"
+        ),
+        "method.telebirr": "📱 ቴሌብር",
+        "method.cbe": "🏦 ሲቢኢ",
+        "method.cbebirr": "📱 ሲቢኢ ብር",
+        "method.boa": "🏦 አቢሲኒያ ባንክ",
         "deposit.title.telebirr": "ቴሌብር ተቀማጭ",
         "deposit.title.cbe": "ሲቢኢ ተቀማጭ",
         "deposit.title.cbebirr": "ሲቢኢ ብር ተቀማጭ",
         "deposit.title.boa": "አቢሲኒያ ባንክ ተቀማጭ",
+        "deposit.title.generic": "{bank} ተቀማጭ",
         "choose_menu": "እባክዎ ከምናሌው አማራጭ ይምረጡ።",
         "username.not_set": "አልተቀናበረም",
     },

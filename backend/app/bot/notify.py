@@ -83,6 +83,94 @@ async def send_telegram_html(
         return False
 
 
+def play_lotto_keyboard(lang: str) -> InlineKeyboardMarkup:
+    url = build_webapp_url("lotto", lang=lang)
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(t(lang, "btn.play_lotto"), web_app=WebAppInfo(url=url))],
+            [InlineKeyboardButton(t(lang, "btn.home"), callback_data="home")],
+        ]
+    )
+
+
+async def notify_lotto_pre_draw(
+    *,
+    telegram_id: int,
+    language_code: str | None,
+    stake: str | Decimal,
+    seconds: int = 60,
+    numbers: list[int] | None = None,
+) -> bool:
+    lang = _locale(language_code)
+    held = ", ".join(str(n) for n in (numbers or [])[:12])
+    if numbers and len(numbers) > 12:
+        held = f"{held}…"
+    text = t(
+        lang,
+        "lotto.pre_draw",
+        stake=str(stake),
+        seconds=int(seconds),
+        numbers=held or "—",
+    )
+    return await send_telegram_html(
+        int(telegram_id),
+        text,
+        reply_markup=play_lotto_keyboard(lang),
+    )
+
+
+async def notify_lotto_winner(
+    *,
+    telegram_id: int,
+    language_code: str | None,
+    stake: str | Decimal,
+    number: int,
+    rank: int,
+    prize: str | Decimal,
+    round_code: str | None = None,
+) -> bool:
+    """Legacy personal win ping — prefer ``notify_lotto_results`` for broadcasts."""
+    lang = _locale(language_code)
+    text = t(
+        lang,
+        "lotto.winner",
+        stake=str(stake),
+        number=int(number),
+        rank=int(rank),
+        prize=str(prize),
+        code=round_code or "—",
+    )
+    return await send_telegram_html(
+        int(telegram_id),
+        text,
+        reply_markup=play_lotto_keyboard(lang),
+    )
+
+
+async def notify_lotto_results(
+    *,
+    telegram_id: int,
+    language_code: str | None,
+    stake: str | Decimal,
+    round_code: str | None = None,
+    summary: str,
+) -> bool:
+    """Room results summary for every real staker after settlement."""
+    lang = _locale(language_code)
+    text = t(
+        lang,
+        "lotto.results",
+        stake=str(stake),
+        code=round_code or "—",
+        summary=summary,
+    )
+    return await send_telegram_html(
+        int(telegram_id),
+        text,
+        reply_markup=play_lotto_keyboard(lang),
+    )
+
+
 async def notify_withdrawal_decision(
     *,
     telegram_id: int,

@@ -58,9 +58,9 @@ class AdminDatabaseTests(TestCase):
     def test_allowlist_is_case_insensitive_and_strips_at(self):
         self.assertTrue(is_admin(self.admin))
         self.assertFalse(is_admin(self.user))
-        self.assertEqual(require_admin(self.admin), self.admin)
+        self.assertEqual(require_admin(self.admin, self.db), self.admin)
         with self.assertRaises(HTTPException) as denied:
-            require_admin(self.user)
+            require_admin(self.user, self.db)
         self.assertEqual(denied.exception.status_code, 403)
 
     def test_balance_adjustment_creates_ledger_and_audit_and_is_idempotent(self):
@@ -321,6 +321,54 @@ class AdminDatabaseTests(TestCase):
         self.assertEqual(bingo["ggr"], "-14.00")
         self.assertEqual(bingo["bot_rounds"], 2)
 
+    def test_lotto_system_gain_bot_win_and_real_win(self):
+        from app.models.lotto_game import LottoRound
+
+        # Bot win: real=50, real_prizes=0, bot=200 → (50−0)−8.00 = 42
+        # Real win (1st): real_prizes=150 → (50−150)−8.00 = −108
+        # house_fee stays real×0.04 = 2.00 (analytics; not equated to gain).
+        bot_win = LottoRound(
+            room_stake=Decimal("10"),
+            round_code="L010-BOTWIN",
+            status="completed",
+            capacity=25,
+            total_pool=Decimal("250"),
+            first_prize=Decimal("150"),
+            second_prize=Decimal("60"),
+            third_prize=Decimal("30"),
+            reserve_amount=Decimal("2"),
+            system_gain=Decimal("42"),
+            bot_won=True,
+            real_stake_total=Decimal("50"),
+            bot_stake_total=Decimal("200"),
+            bot_prizes=Decimal("240"),
+            house_fee=Decimal("2"),
+        )
+        real_win = LottoRound(
+            room_stake=Decimal("10"),
+            round_code="L010-REALWIN",
+            status="completed",
+            capacity=25,
+            total_pool=Decimal("250"),
+            first_prize=Decimal("150"),
+            second_prize=Decimal("60"),
+            third_prize=Decimal("30"),
+            reserve_amount=Decimal("2"),
+            system_gain=Decimal("-108"),
+            bot_won=False,
+            real_stake_total=Decimal("50"),
+            bot_stake_total=Decimal("200"),
+            bot_prizes=Decimal("90"),
+            house_fee=Decimal("2"),
+        )
+        self.db.add_all([bot_win, real_win])
+        self.db.commit()
+        result = service.game_summary(self.db, None, None)
+        lotto = next(item for item in result["games"] if item["game"] == "lotto")
+        # 42 + (−108) = −66 — must use system_gain, not creation-time reserve.
+        self.assertEqual(lotto["explicit_system_fee"], "-66.00")
+        self.assertEqual(lotto["ggr"], "-66.00")
+
     def test_user_search_isolated_and_decimal_strings(self):
         page = service.list_users(self.db, "player", None, 20, 0, "joined_desc")
         self.assertEqual(page["total"], 1)
@@ -410,7 +458,11 @@ class AdminDatabaseTests(TestCase):
         self.assertIn("limit: ADMIN_PAGE_SIZE", dash)
         self.assertIn("getBingoBot", svc)
         self.assertIn("setBingoBot", svc)
+        self.assertIn("getLottoBot", svc)
+        self.assertIn("setLottoBot", svc)
         self.assertIn("BingoBotControl", dash)
+        self.assertIn("LottoBotControl", dash)
+        self.assertIn("onReserveRange", dash)
         # Must not prefetch every section on mount.
         self.assertNotRegex(
             dash,
@@ -440,7 +492,7 @@ class BingoBotAdminToggleTests(TestCase):
     @mock.patch("app.admin.helpers.settings.ADMIN_TELEGRAM_USERNAMES", "has365")
     def test_non_admin_denied_for_bingo_bot_routes(self):
         with self.assertRaises(HTTPException) as denied:
-            require_admin(self.user)
+            require_admin(self.user, self.db)
         self.assertEqual(denied.exception.status_code, 403)
 
     def test_toggle_writes_audit_and_persists_flag(self):
@@ -450,6 +502,12 @@ class BingoBotAdminToggleTests(TestCase):
             status_payload = {
                 "enabled": False,
                 "source": "redis",
+                "reserve_min": 15,
+                "reserve_max": 30,
+                "reserve_count": 30,
+                "reserve_source": "default",
+                "allowed_min": 0,
+                "allowed_max": 50,
                 "boards_held": 0,
                 "status": "inactive",
                 "room_id": "default",
@@ -492,9 +550,114 @@ class BingoBotAdminToggleTests(TestCase):
 
             logs = self.db.query(AdminAuditLog).all()
             self.assertEqual(len(logs), 1)
-            self.assertEqual(logs[0].action, "bingo_bot.toggle")
+            self.assertEqual(logs[0].action, "bingo_bot.update")
             self.assertEqual(logs[0].target_type, "bingo_bot")
             self.assertEqual(logs[0].after_data["enabled"], False)
+
+        asyncio.run(run())
+
+    def test_reserve_range_update_audits(self):
+        import asyncio
+
+        async def run():
+            status_payload = {
+                "enabled": True,
+                "source": "redis",
+                "reserve_min": 2,
+                "reserve_max": 10,
+                "reserve_count": 10,
+                "reserve_source": "default",
+                "allowed_min": 0,
+                "allowed_max": 50,
+                "boards_held": 0,
+                "status": "active",
+                "room_id": "default",
+                "room_status": "lobby",
+            }
+            with (
+                mock.patch(
+                    "app.bingo.house_bot.set_bot_reserve_range",
+                    new=mock.AsyncMock(return_value=(3, 12)),
+                ) as set_range,
+                mock.patch(
+                    "app.admin.service.bingo_bot_status",
+                    new=mock.AsyncMock(
+                        side_effect=[
+                            status_payload,
+                            {
+                                **status_payload,
+                                "reserve_min": 3,
+                                "reserve_max": 12,
+                                "reserve_count": 12,
+                                "reserve_source": "redis",
+                            },
+                        ]
+                    ),
+                ),
+            ):
+                result = await service.update_bingo_bot(
+                    self.db, self.admin,
+                    reserve_min=3,
+                    reserve_max=12,
+                    request_id=uuid.uuid4(),
+                )
+            set_range.assert_awaited_once_with(3, 12)
+            self.assertEqual(result["reserve_min"], 3)
+            self.assertEqual(result["reserve_max"], 12)
+            logs = self.db.query(AdminAuditLog).all()
+            self.assertEqual(logs[0].action, "bingo_bot.update")
+            self.assertEqual(logs[0].after_data["reserve_min"], 3)
+            self.assertEqual(logs[0].after_data["reserve_max"], 12)
+
+        asyncio.run(run())
+
+    def test_legacy_reserve_count_maps_to_min_max(self):
+        import asyncio
+
+        async def run():
+            status_payload = {
+                "enabled": True,
+                "source": "redis",
+                "reserve_min": 20,
+                "reserve_max": 20,
+                "reserve_count": 20,
+                "reserve_source": "default",
+                "allowed_min": 0,
+                "allowed_max": 50,
+                "boards_held": 0,
+                "status": "active",
+                "room_id": "default",
+                "room_status": "lobby",
+            }
+            with (
+                mock.patch(
+                    "app.bingo.house_bot.set_bot_reserve_range",
+                    new=mock.AsyncMock(return_value=(25, 25)),
+                ) as set_range,
+                mock.patch(
+                    "app.admin.service.bingo_bot_status",
+                    new=mock.AsyncMock(
+                        side_effect=[
+                            status_payload,
+                            {
+                                **status_payload,
+                                "reserve_min": 25,
+                                "reserve_max": 25,
+                                "reserve_count": 25,
+                                "reserve_source": "redis",
+                            },
+                        ]
+                    ),
+                ),
+            ):
+                result = await service.update_bingo_bot(
+                    self.db, self.admin,
+                    reserve_count=25,
+                    request_id=uuid.uuid4(),
+                )
+            set_range.assert_awaited_once_with(25, 25)
+            self.assertEqual(result["reserve_min"], 25)
+            self.assertEqual(result["reserve_max"], 25)
 
         asyncio.run(run())
 
@@ -506,6 +669,10 @@ class BingoBotAdminToggleTests(TestCase):
                 mock.patch(
                     "app.bingo.house_bot.get_bot_enabled",
                     new=mock.AsyncMock(return_value=(True, "redis")),
+                ),
+                mock.patch(
+                    "app.bingo.house_bot.get_bot_reserve_range",
+                    new=mock.AsyncMock(return_value=(5, 22, "redis")),
                 ),
                 mock.patch(
                     "app.bingo.house_bot.cached_bot_user_id",
@@ -521,6 +688,99 @@ class BingoBotAdminToggleTests(TestCase):
             self.assertEqual(status["source"], "redis")
             self.assertEqual(status["status"], "active")
             self.assertEqual(status["boards_held"], 0)
+            self.assertEqual(status["reserve_min"], 5)
+            self.assertEqual(status["reserve_max"], 22)
+            self.assertEqual(status["reserve_source"], "redis")
+
+        asyncio.run(run())
+
+
+class LottoBotAdminTests(TestCase):
+    def setUp(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine, expire_on_commit=False)()
+        self.admin = User(
+            telegram_id=1, username="@HaS365", first_name="Admin",
+            referral_code="ADMIN", balance=Decimal("500.00"),
+        )
+        self.user = User(
+            telegram_id=2, username="player", first_name="Player",
+            referral_code="PLAYER", balance=Decimal("100.00"),
+        )
+        self.db.add_all([self.admin, self.user])
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+
+    @mock.patch("app.admin.helpers.settings.ADMIN_TELEGRAM_USERNAMES", "has365")
+    def test_non_admin_denied_for_lotto_bot_routes(self):
+        with self.assertRaises(HTTPException) as denied:
+            require_admin(self.user, self.db)
+        self.assertEqual(denied.exception.status_code, 403)
+
+    def test_lotto_bot_update_audits(self):
+        import asyncio
+
+        async def run():
+            status_payload = {
+                "enabled": False,
+                "source": "env",
+                "reserve_min": 3,
+                "reserve_max": 8,
+                "reserve_source": "default",
+                "allowed_min": 1,
+                "allowed_max": 25,
+                "numbers_held": 0,
+                "status": "inactive",
+                "rooms": [],
+            }
+            with (
+                mock.patch(
+                    "app.lotto.house_bot.set_bot_enabled",
+                    new=mock.AsyncMock(),
+                ) as set_flag,
+                mock.patch(
+                    "app.lotto.house_bot.set_bot_reserve_range",
+                    new=mock.AsyncMock(return_value=(4, 10)),
+                ) as set_range,
+                mock.patch(
+                    "app.lotto.house_bot.tick_all",
+                    new=mock.AsyncMock(return_value=[]),
+                ),
+                mock.patch(
+                    "app.admin.service.lotto_bot_status",
+                    new=mock.AsyncMock(
+                        side_effect=[
+                            status_payload,
+                            {
+                                **status_payload,
+                                "enabled": True,
+                                "source": "redis",
+                                "reserve_min": 4,
+                                "reserve_max": 10,
+                                "reserve_source": "redis",
+                                "status": "active",
+                            },
+                        ]
+                    ),
+                ),
+            ):
+                result = await service.update_lotto_bot(
+                    self.db,
+                    self.admin,
+                    enabled=True,
+                    reserve_min=4,
+                    reserve_max=10,
+                    request_id=uuid.uuid4(),
+                )
+            set_flag.assert_awaited_once_with(True)
+            set_range.assert_awaited_once_with(4, 10)
+            self.assertTrue(result["enabled"])
+            self.assertEqual(result["reserve_min"], 4)
+            logs = self.db.query(AdminAuditLog).all()
+            self.assertEqual(logs[0].action, "lotto_bot.update")
 
         asyncio.run(run())
 
@@ -659,6 +919,7 @@ class AdminSanitizationTests(TestCase):
         shell = (root / "frontend/src/components/bingo/BingoGame.tsx").read_text(encoding="utf-8")
         nav = (root / "frontend/src/components/bingo/BottomNav.tsx").read_text(encoding="utf-8")
         dash = (root / "frontend/src/components/admin/AdminDashboard.tsx").read_text(encoding="utf-8")
+        svc = (root / "frontend/src/services/admin.ts").read_text(encoding="utf-8")
         self.assertIn("getAdminMe()", shell)
         self.assertIn("capability.is_admin", shell)
         self.assertIn('id !== "admin" || isAdmin', nav)
@@ -666,7 +927,13 @@ class AdminSanitizationTests(TestCase):
         self.assertIn("depositStatus", dash)
         self.assertIn('"all"', dash)
         self.assertIn("maintenance", dash)
+        self.assertIn("messages", dash)
+        self.assertIn("admins", dash)
+        self.assertIn("can_maintenance", dash)
+        self.assertIn("can_adjust_balance", dash)
         self.assertIn("previewDataRetention", dash)
+        self.assertIn("sendAdminBroadcast", svc)
+        self.assertIn("listAdmins", svc)
 
 
 class AdminDataRetentionTests(TestCase):
@@ -772,6 +1039,27 @@ class AdminDataRetentionTests(TestCase):
             sms_transaction_id="NEW1",
         )
         self.db.add_all([old_dep, new_dep])
+        old_plinko = PlinkoPlay(
+            id=uuid.uuid4(), user_id=self.user.id, stake=Decimal("10"),
+            risk="medium", rows=8, slot_index=4, multiplier=Decimal("1.5"),
+            payout=Decimal("15"), net_result=Decimal("5"), is_demo=False,
+        )
+        new_plinko = PlinkoPlay(
+            id=uuid.uuid4(), user_id=self.user.id, stake=Decimal("5"),
+            risk="medium", rows=8, slot_index=2, multiplier=Decimal("1.0"),
+            payout=Decimal("5"), net_result=Decimal("0"), is_demo=False,
+        )
+        self.db.add_all([old_plinko, new_plinko])
+        self.db.add(WalletTransaction(
+            user_id=self.user.id, transaction_type="BINGO_STAKE",
+            amount=Decimal("-10"), balance_before=Decimal("110"),
+            balance_after=Decimal("100"), status="COMPLETED",
+        ))
+        self.db.add(WalletTransaction(
+            user_id=self.user.id, transaction_type="DEPOSIT",
+            amount=Decimal("10"), balance_before=Decimal("90"),
+            balance_after=Decimal("100"), status="COMPLETED",
+        ))
         self.db.flush()
         self.db.execute(
             Deposit.__table__.update()
@@ -783,24 +1071,51 @@ class AdminDataRetentionTests(TestCase):
             .where(Deposit.id == new_dep.id)
             .values(created_at=recent.replace(tzinfo=None))
         )
+        self.db.execute(
+            PlinkoPlay.__table__.update()
+            .where(PlinkoPlay.id == old_plinko.id)
+            .values(created_at=old)
+        )
+        self.db.execute(
+            PlinkoPlay.__table__.update()
+            .where(PlinkoPlay.id == new_plinko.id)
+            .values(created_at=recent)
+        )
+        self.db.execute(
+            WalletTransaction.__table__.update()
+            .where(WalletTransaction.transaction_type == "BINGO_STAKE")
+            .values(created_at=old)
+        )
         self.db.commit()
+
+        preview = data_retention.preview_purge(self.db, "30d")
+        self.assertTrue(preview["keeps_payments"])
+        self.assertFalse(preview["zeros_balances"])
+        self.assertEqual(preview["counts"]["deposits"], 0)
+        self.assertGreaterEqual(preview["counts"]["plinko_plays"], 1)
 
         async def run():
             return await data_retention.run_purge(
                 self.db, self.admin,
                 option="30d",
                 confirmation="DELETE",
-                reason="trim old deposits",
+                reason="trim old game history",
                 request_id=uuid.uuid4(),
             )
 
         import asyncio
         result = asyncio.run(run())
-        self.assertEqual(result["deleted"]["deposits"], 1)
-        self.assertEqual(self.db.query(Deposit).count(), 1)
-        self.assertEqual(
-            self.db.query(Deposit).one().sms_transaction_id, "NEW1"
-        )
+        # Age purge is game-history only: deposits stay (including old ones).
+        self.assertEqual(result["deleted"]["deposits"], 0)
+        self.assertEqual(self.db.query(Deposit).count(), 2)
+        self.assertEqual(result["deleted"]["plinko_plays"], 1)
+        self.assertEqual(self.db.query(PlinkoPlay).count(), 1)
+        remaining_types = {
+            row.transaction_type
+            for row in self.db.query(WalletTransaction).all()
+        }
+        self.assertIn("DEPOSIT", remaining_types)
+        self.assertNotIn("BINGO_STAKE", remaining_types)
         self.db.refresh(self.user)
         self.assertEqual(self.user.balance, Decimal("100.00"))
 
@@ -937,3 +1252,296 @@ class AdminDataRetentionTests(TestCase):
         self.assertEqual(len(audits), 1)
         self.assertEqual(audits[0].action, "data.purge")
         self.assertEqual(audits[0].target_id, "games_only")
+
+
+class AdminUserDeletionTests(TestCase):
+    def setUp(self):
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine, expire_on_commit=False)()
+        self.admin = User(
+            telegram_id=1, username="has365", first_name="Admin",
+            referral_code="ADMIN", balance=Decimal("0.00"),
+        )
+        self.user = User(
+            telegram_id=99, username="player", first_name="Player",
+            referral_code="PLAYER", balance=Decimal("0.00"),
+        )
+        self.rich = User(
+            telegram_id=100, username="rich", first_name="Rich",
+            referral_code="RICH", balance=Decimal("50.00"),
+        )
+        self.bot = User(
+            telegram_id=-1, username="house_bot", first_name="Bot",
+            referral_code="HOUSEBOT", balance=Decimal("0.00"), is_bot=True,
+        )
+        self.db.add_all([self.admin, self.user, self.rich, self.bot])
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+
+    @mock.patch("app.admin.helpers.settings.ADMIN_TELEGRAM_USERNAMES", "has365")
+    def test_delete_one_user_by_username_cascades(self):
+        from app.admin import user_deletion
+
+        self.db.add(Deposit(
+            user_id=self.user.id, amount=Decimal("10"), method="telebirr",
+            sms_transaction_id="DEL1",
+        ))
+        self.db.add(PlinkoPlay(
+            id=uuid.uuid4(), user_id=self.user.id, stake=Decimal("5"),
+            risk="medium", rows=8, slot_index=1, multiplier=Decimal("1"),
+            payout=Decimal("5"), net_result=Decimal("0"), is_demo=False,
+        ))
+        self.db.commit()
+
+        result = user_deletion.delete_user_by_query(
+            self.db, self.admin,
+            query="@player",
+            confirmation="DELETE_USERS",
+            reason="cleanup test account",
+            request_id=uuid.uuid4(),
+        )
+        self.assertFalse(result["idempotent"])
+        self.assertIsNone(self.db.query(User).filter(User.username == "player").first())
+        self.assertEqual(self.db.query(Deposit).count(), 0)
+        self.assertEqual(self.db.query(PlinkoPlay).count(), 0)
+        self.assertEqual(self.db.query(User).count(), 3)
+
+    @mock.patch("app.admin.helpers.settings.ADMIN_TELEGRAM_USERNAMES", "has365")
+    def test_blocks_admin_bot_and_nonzero_without_force(self):
+        from app.admin import user_deletion
+        from fastapi import HTTPException
+
+        with self.assertRaises(HTTPException) as err:
+            user_deletion.delete_user_by_query(
+                self.db, self.admin,
+                query="has365",
+                confirmation="DELETE_USERS",
+                reason="should fail",
+                request_id=uuid.uuid4(),
+            )
+        self.assertEqual(err.exception.status_code, 422)
+
+        with self.assertRaises(HTTPException) as err2:
+            user_deletion.delete_user_by_query(
+                self.db, self.admin,
+                query="house_bot",
+                confirmation="DELETE_USERS",
+                reason="should fail",
+                request_id=uuid.uuid4(),
+            )
+        self.assertEqual(err2.exception.status_code, 422)
+
+        with self.assertRaises(HTTPException) as err3:
+            user_deletion.delete_user_by_query(
+                self.db, self.admin,
+                query="rich",
+                confirmation="DELETE_USERS",
+                reason="should fail",
+                request_id=uuid.uuid4(),
+                force=False,
+            )
+        self.assertEqual(err3.exception.status_code, 422)
+        self.assertIn("non-zero", err3.exception.detail.lower())
+
+        result = user_deletion.delete_user_by_query(
+            self.db, self.admin,
+            query="100",
+            confirmation="DELETE_USERS",
+            reason="force remove rich",
+            request_id=uuid.uuid4(),
+            force=True,
+        )
+        self.assertEqual(result["deleted_user"]["username"], "rich")
+        self.assertIsNone(self.db.query(User).filter(User.username == "rich").first())
+
+    @mock.patch("app.admin.helpers.settings.ADMIN_TELEGRAM_USERNAMES", "has365")
+    def test_delete_all_keeps_admin_and_bot(self):
+        from app.admin import user_deletion
+
+        result = user_deletion.delete_all_non_protected_users(
+            self.db, self.admin,
+            confirmation="DELETE_ALL_USERS",
+            reason="wipe players",
+            request_id=uuid.uuid4(),
+            force=True,
+        )
+        self.assertGreaterEqual(result["deleted_count"], 2)
+        usernames = {u.username for u in self.db.query(User).all()}
+        self.assertEqual(usernames, {"has365", "house_bot"})
+
+
+class MultiAdminAndBroadcastTests(TestCase):
+    def setUp(self):
+        # Ensure AdminUser is mapped before create_all.
+        from app.models.admin_user import AdminUser  # noqa: F401
+
+        engine = create_engine("sqlite+pysqlite:///:memory:")
+        Base.metadata.create_all(engine)
+        self.db = sessionmaker(bind=engine, expire_on_commit=False)()
+        self.super = User(
+            telegram_id=1, username="@HaS365", first_name="Super",
+            referral_code="SUPER", balance=Decimal("500.00"),
+        )
+        self.player = User(
+            telegram_id=2, username="player", first_name="Player",
+            referral_code="PLAYER", balance=Decimal("100.00"),
+            language_code="en",
+        )
+        self.db.add_all([self.super, self.player])
+        self.db.commit()
+
+    def tearDown(self):
+        self.db.close()
+
+    @mock.patch("app.admin.helpers.settings.ADMIN_TELEGRAM_USERNAMES", "has365")
+    def test_db_admin_is_recognized_and_not_super(self):
+        from app.admin.helpers import admin_permissions, is_super_admin, require_super_admin
+        from app.admin import admin_mgmt
+
+        admin_mgmt.add_admin(
+            self.db, self.super, "helper", uuid.uuid4()
+        )
+        helper = User(
+            telegram_id=3, username="Helper", first_name="Helper",
+            referral_code="HELP", balance=Decimal("10.00"),
+        )
+        self.db.add(helper)
+        self.db.commit()
+
+        self.assertTrue(is_admin(helper, self.db))
+        self.assertFalse(is_super_admin(helper))
+        caps = admin_permissions(helper, self.db)
+        self.assertTrue(caps["is_admin"])
+        self.assertFalse(caps["is_super"])
+        self.assertFalse(caps["can_maintenance"])
+        self.assertFalse(caps["can_adjust_balance"])
+        self.assertFalse(caps["can_manage_admins"])
+        self.assertTrue(admin_permissions(self.super, self.db)["can_manage_admins"])
+        with self.assertRaises(HTTPException) as denied:
+            require_super_admin(helper)
+        self.assertEqual(denied.exception.status_code, 403)
+
+    @mock.patch("app.admin.helpers.settings.ADMIN_TELEGRAM_USERNAMES", "has365")
+    def test_cannot_remove_super_admin(self):
+        from app.admin import admin_mgmt
+
+        with self.assertRaises(HTTPException) as denied:
+            admin_mgmt.remove_admin(self.db, self.super, "has365", uuid.uuid4())
+        self.assertEqual(denied.exception.status_code, 403)
+
+    @mock.patch("app.admin.helpers.settings.ADMIN_TELEGRAM_USERNAMES", "has365")
+    def test_add_and_remove_managed_admin(self):
+        from app.admin import admin_mgmt
+
+        added = admin_mgmt.add_admin(self.db, self.super, "@OpsUser", uuid.uuid4())
+        self.assertEqual(added["username"], "opsuser")
+        listed = admin_mgmt.list_admins(self.db)
+        self.assertEqual(listed["total"], 2)
+        removed = admin_mgmt.remove_admin(self.db, self.super, "opsuser", uuid.uuid4())
+        self.assertTrue(removed["removed"])
+        self.assertEqual(admin_mgmt.list_admins(self.db)["total"], 1)
+
+    @mock.patch("app.admin.helpers.settings.ADMIN_TELEGRAM_USERNAMES", "has365")
+    def test_router_gates_balance_and_maintenance_to_super(self):
+        import inspect
+
+        from app.admin import router as admin_router
+        from app.admin.helpers import require_super_admin
+
+        helper = User(
+            telegram_id=9, username="helper", first_name="H",
+            referral_code="HX", balance=Decimal("1.00"),
+        )
+        self.db.add(helper)
+        self.db.commit()
+        from app.admin import admin_mgmt
+        admin_mgmt.add_admin(self.db, self.super, "helper", uuid.uuid4())
+
+        with self.assertRaises(HTTPException) as denied:
+            require_super_admin(helper)
+        self.assertEqual(denied.exception.status_code, 403)
+
+        src = inspect.getsource(admin_router)
+        self.assertIn("require_super_admin", src)
+        self.assertRegex(src, r"adjust_user_balance[\s\S]*require_super_admin")
+        self.assertRegex(src, r"preview_data_retention[\s\S]*require_super_admin")
+        self.assertRegex(src, r"purge_data_retention[\s\S]*require_super_admin")
+        self.assertIn('/broadcast"', src)
+        self.assertIn('"/admins"', src)
+
+    @mock.patch("app.admin.helpers.settings.ADMIN_TELEGRAM_USERNAMES", "has365")
+    def test_broadcast_sends_with_throttle_and_reports_counts(self):
+        import asyncio
+        from app.admin import admin_mgmt
+
+        extra = User(
+            telegram_id=42, username="p2", first_name="P2",
+            referral_code="P2", balance=Decimal("5.00"),
+        )
+        self.db.add(extra)
+        self.db.commit()
+
+        async def run():
+            with (
+                mock.patch(
+                    "app.admin.admin_mgmt.send_telegram_html",
+                    new=mock.AsyncMock(side_effect=[True, False, True]),
+                ) as send,
+                mock.patch("app.admin.admin_mgmt.BROADCAST_THROTTLE_S", 0),
+                mock.patch(
+                    "app.admin.admin_mgmt.build_webapp_url",
+                    return_value="https://example.com/?game=lotto",
+                ),
+            ):
+                result = await admin_mgmt.broadcast_message(
+                    self.db,
+                    self.super,
+                    message="hello players play a loto game",
+                    button_url=None,
+                    button_label=None,
+                    game="lotto",
+                    request_id=uuid.uuid4(),
+                )
+            self.assertEqual(result["intended"], 3)
+            self.assertEqual(result["succeeded"], 2)
+            self.assertEqual(result["failed"], 1)
+            self.assertTrue(result["has_button"])
+            self.assertEqual(result["game"], "lotto")
+            self.assertEqual(send.await_count, 3)
+            self.assertIsNotNone(send.await_args.kwargs.get("reply_markup"))
+
+        asyncio.run(run())
+
+    @mock.patch("app.admin.helpers.settings.ADMIN_TELEGRAM_USERNAMES", "has365")
+    def test_broadcast_message_only_has_no_button(self):
+        import asyncio
+        from app.admin import admin_mgmt
+
+        async def run():
+            with (
+                mock.patch(
+                    "app.admin.admin_mgmt.send_telegram_html",
+                    new=mock.AsyncMock(return_value=True),
+                ) as send,
+                mock.patch("app.admin.admin_mgmt.BROADCAST_THROTTLE_S", 0),
+            ):
+                result = await admin_mgmt.broadcast_message(
+                    self.db,
+                    self.super,
+                    message="<b>hi</b>",
+                    button_url=None,
+                    button_label=None,
+                    game=None,
+                    request_id=uuid.uuid4(),
+                )
+            self.assertEqual(result["intended"], 2)
+            self.assertEqual(result["succeeded"], 2)
+            self.assertFalse(result["has_button"])
+            text = send.await_args.args[1]
+            self.assertEqual(text, "&lt;b&gt;hi&lt;/b&gt;")
+            self.assertIsNone(send.await_args.kwargs.get("reply_markup"))
+
+        asyncio.run(run())
